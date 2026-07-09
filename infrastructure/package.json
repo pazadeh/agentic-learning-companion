@@ -1,0 +1,14 @@
+{
+  "name": "audio-companion-infrastructure",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CDK CLI pinned to match aws-cdk-lib for the Audio Learning Companion stack",
+  "scripts": {
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1128.1"
+  }
+}

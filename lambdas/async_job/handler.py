@@ -1,0 +1,390 @@
+"""Async job Lambda.
+
+Handles the job lifecycle for lecture generation. The same function serves two
+roles, distinguished by the event shape:
+
+1. **API role** (API Gateway proxy event): routes ``POST /jobs/start``,
+   ``GET /jobs/{jobId}/status`` and ``GET /jobs/{jobId}/result``. ``start``
+   validates input, applies rate limiting + content filtering, writes a ``pending``
+   job to DynamoDB, then invokes *this same function* asynchronously to do the work.
+
+2. **Worker role** (``{"_worker": true, "job_id": ...}`` event): pulls the job,
+   invokes the Bedrock AgentCore runtime, and updates the job with progress/result.
+
+Security: the user id always comes from the verified Cognito JWT claims
+(``requestContext.authorizer.claims.sub``) — never from the request body.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+import uuid
+from decimal import Decimal
+from typing import Any, Optional
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Key
+
+from security.audit_logger import log_event
+from security.content_filter import check_topic_safety
+from security.input_validator import (
+    ValidationError,
+    validate_job_id,
+    validate_message,
+    validate_user_id,
+)
+from security.rate_limiter import check_rate_limit
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+JOBS_TABLE = os.environ.get("JOBS_TABLE", "")
+LECTURES_TABLE = os.environ.get("LECTURES_TABLE", "")
+AGENT_RUNTIME_ARN = os.environ.get("AGENT_RUNTIME_ARN", "")
+SELF_FUNCTION_NAME = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "")
+JOB_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+_dynamodb = None
+_lambda_client = None
+_agentcore_client = None
+
+
+def _jobs_table():
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb")
+    return _dynamodb.Table(JOBS_TABLE)
+
+
+def _lectures_table():
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb")
+    return _dynamodb.Table(LECTURES_TABLE)
+
+
+def _lambda():
+    global _lambda_client
+    if _lambda_client is None:
+        _lambda_client = boto3.client("lambda")
+    return _lambda_client
+
+
+def _agentcore():
+    global _agentcore_client
+    if _agentcore_client is None:
+        # Lecture generation (research + writing + Polly synthesis) routinely runs
+        # longer than boto3's default 60s read timeout — especially for longer
+        # lectures. A client read timeout would mark the job failed even though the
+        # worker Lambda has a 900s budget. Give the synchronous invoke nearly the
+        # whole Lambda timeout, and disable retries so a slow run isn't re-issued.
+        _agentcore_client = boto3.client(
+            "bedrock-agentcore",
+            config=Config(
+                connect_timeout=15,
+                read_timeout=870,
+                retries={"max_attempts": 1, "mode": "standard"},
+            ),
+        )
+    return _agentcore_client
+
+
+# --------------------------------------------------------------------------- #
+# HTTP helpers
+# --------------------------------------------------------------------------- #
+def _response(status: int, body: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "statusCode": status,
+        "headers": {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": os.environ.get("CORS_ALLOW_ORIGIN", "*"),
+            "Access-Control-Allow-Headers": "Authorization,Content-Type",
+            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        },
+        "body": json.dumps(body),
+    }
+
+
+def _claims(event: dict[str, Any]) -> dict[str, Any]:
+    return (
+        event.get("requestContext", {})
+        .get("authorizer", {})
+        .get("claims", {})
+        or {}
+    )
+
+
+def _user_id_from_event(event: dict[str, Any]) -> str:
+    sub = _claims(event).get("sub", "")
+    return validate_user_id(sub)
+
+
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
+def handler(event: dict[str, Any], context: Any) -> Any:
+    # Worker invocation (async self-invoke) carries an explicit flag.
+    if isinstance(event, dict) and event.get("_worker"):
+        return _run_job(event["job_id"])
+
+    method = event.get("httpMethod", "")
+    resource = event.get("resource", "") or event.get("path", "")
+
+    try:
+        if method == "POST" and resource.endswith("/jobs/start"):
+            return _start_job(event)
+        if method == "GET" and resource.endswith("/jobs/{jobId}/status"):
+            return _job_status(event)
+        if method == "GET" and resource.endswith("/jobs/{jobId}/result"):
+            return _job_result(event)
+        if method == "GET" and resource.endswith("/lectures"):
+            return _list_lectures(event)
+        return _response(404, {"error": "not_found"})
+    except ValidationError as exc:
+        return _response(400, {"error": "invalid_input", "message": str(exc)})
+    except PermissionError:
+        return _response(403, {"error": "forbidden"})
+    except Exception:  # noqa: BLE001
+        logger.exception("Unhandled error")
+        return _response(500, {"error": "internal_error"})
+
+
+# --------------------------------------------------------------------------- #
+# Routes
+# --------------------------------------------------------------------------- #
+def _start_job(event: dict[str, Any]) -> dict[str, Any]:
+    started = time.time()
+    user_id = _user_id_from_event(event)
+
+    body = json.loads(event.get("body") or "{}")
+    message = validate_message(body.get("message", ""))
+    action = "lecture" if body.get("action") == "lecture" else "chat"
+
+    if not check_rate_limit(user_id, action):
+        log_event("job_start", "rate_limited", user_id=user_id, error_code="rate_limited")
+        return _response(429, {"error": "rate_limited"})
+
+    safety = check_topic_safety(message)
+    if not safety.allowed:
+        log_event("job_start", "blocked", user_id=user_id, error_code=f"content:{safety.reason}")
+        return _response(
+            403,
+            {"error": "content_blocked", "message": "This topic can't be turned into a lecture."},
+        )
+
+    job_id = str(uuid.uuid4())
+    now = int(time.time())
+    _jobs_table().put_item(
+        Item={
+            "jobId": job_id,
+            "userId": user_id,
+            "status": "pending",
+            "progress": 0,
+            "message": message,
+            "action": action,
+            "createdAt": now,
+            "ttl": now + JOB_TTL_SECONDS,
+        }
+    )
+
+    # Kick off the worker asynchronously (Event invocation type = fire and forget).
+    _lambda().invoke(
+        FunctionName=SELF_FUNCTION_NAME,
+        InvocationType="Event",
+        Payload=json.dumps({"_worker": True, "job_id": job_id}).encode("utf-8"),
+    )
+
+    log_event(
+        "job_start",
+        "accepted",
+        user_id=user_id,
+        job_id=job_id,
+        duration_ms=int((time.time() - started) * 1000),
+    )
+    return _response(202, {"job_id": job_id, "status": "pending"})
+
+
+def _load_job_for_user(event: dict[str, Any]) -> dict[str, Any]:
+    user_id = _user_id_from_event(event)
+    job_id = validate_job_id((event.get("pathParameters") or {}).get("jobId", ""))
+    item = _jobs_table().get_item(Key={"jobId": job_id}).get("Item")
+    if not item:
+        raise ValidationError("job not found")
+    if item.get("userId") != user_id:
+        # Never reveal another user's job.
+        raise PermissionError("not your job")
+    return item
+
+
+def _job_status(event: dict[str, Any]) -> dict[str, Any]:
+    item = _load_job_for_user(event)
+    return _response(
+        200,
+        {
+            "job_id": item["jobId"],
+            "status": item.get("status", "pending"),
+            "progress": int(item.get("progress", 0)),
+        },
+    )
+
+
+def _job_result(event: dict[str, Any]) -> dict[str, Any]:
+    item = _load_job_for_user(event)
+    status = item.get("status", "pending")
+    if status != "completed":
+        return _response(
+            200,
+            {"job_id": item["jobId"], "status": status, "progress": int(item.get("progress", 0))},
+        )
+    result = item.get("result")
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            result = {"response": result}
+    return _response(
+        200,
+        {"job_id": item["jobId"], "status": "completed", "progress": 100, "result": result},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Lectures (history)
+# --------------------------------------------------------------------------- #
+def _to_jsonable(value: Any) -> Any:
+    """Convert DynamoDB types (Decimal) into JSON-serializable values."""
+    if isinstance(value, Decimal):
+        # Whole numbers -> int, otherwise float.
+        return int(value) if value % 1 == 0 else float(value)
+    if isinstance(value, list):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _list_lectures(event: dict[str, Any]) -> dict[str, Any]:
+    """Return the caller's saved lectures, newest first.
+
+    Lectures are stored as ``pk = USER#{user_id}``, ``sk = LECTURE#{lecture_id}``.
+    GSI1 (pk, createdAt) lets us return them ordered by recency without a scan.
+    """
+    user_id = _user_id_from_event(event)
+    if not LECTURES_TABLE:
+        return _response(200, {"lectures": []})
+
+    try:
+        result = _lectures_table().query(
+            IndexName="GSI1",
+            KeyConditionExpression=Key("pk").eq(f"USER#{user_id}"),
+            ScanIndexForward=False,  # newest createdAt first
+            Limit=200,
+        )
+    except ClientError:
+        logger.exception("Failed to query lectures for user")
+        return _response(500, {"error": "internal_error"})
+
+    lectures = []
+    for item in result.get("Items", []):
+        lectures.append(
+            {
+                "lectureId": item.get("lectureId", ""),
+                "title": item.get("title", ""),
+                "topic": item.get("topic", ""),
+                "s3Key": item.get("s3Key", ""),
+                "durationMinutes": _to_jsonable(item.get("durationMinutes", 0)),
+                "createdAt": item.get("createdAt", ""),
+            }
+        )
+    # Drop any malformed rows missing the essentials for playback.
+    lectures = [l for l in lectures if l["lectureId"] and l["s3Key"]]
+    return _response(200, {"lectures": lectures})
+
+
+# --------------------------------------------------------------------------- #
+# Worker
+# --------------------------------------------------------------------------- #
+def _update_job(job_id: str, **fields: Any) -> None:
+    names = {f"#{k}": k for k in fields}
+    values = {f":{k}": v for k, v in fields.items()}
+    expr = "SET " + ", ".join(f"#{k} = :{k}" for k in fields)
+    _jobs_table().update_item(
+        Key={"jobId": job_id},
+        UpdateExpression=expr,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def _run_job(job_id: str) -> dict[str, Any]:
+    started = time.time()
+    item = _jobs_table().get_item(Key={"jobId": job_id}).get("Item")
+    if not item:
+        logger.error("Worker could not find job %s", job_id)
+        return {"ok": False}
+
+    user_id = item["userId"]
+    try:
+        _update_job(job_id, status="processing", progress=10)
+
+        if not AGENT_RUNTIME_ARN:
+            raise RuntimeError("AGENT_RUNTIME_ARN is not configured")
+
+        result = _invoke_agent(user_id, item["message"], job_id)
+
+        _update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            result=json.dumps(result),
+        )
+        log_event(
+            "job_complete",
+            "completed",
+            user_id=user_id,
+            job_id=job_id,
+            duration_ms=int((time.time() - started) * 1000),
+        )
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Job %s failed", job_id)
+        _update_job(job_id, status="failed", progress=100, error=str(exc)[:500])
+        log_event(
+            "job_complete",
+            "failed",
+            user_id=user_id,
+            job_id=job_id,
+            error_code=type(exc).__name__,
+            duration_ms=int((time.time() - started) * 1000),
+        )
+        return {"ok": False}
+
+
+def _invoke_agent(user_id: str, message: str, job_id: str) -> dict[str, Any]:
+    """Invoke the Bedrock AgentCore runtime and return a parsed result dict."""
+    payload = json.dumps({"user_id": user_id, "message": message, "job_id": job_id})
+    response = _agentcore().invoke_agent_runtime(
+        agentRuntimeArn=AGENT_RUNTIME_ARN,
+        runtimeSessionId=job_id,
+        payload=payload.encode("utf-8"),
+        contentType="application/json",
+        accept="application/json",
+    )
+
+    raw = response.get("response")
+    if hasattr(raw, "read"):
+        raw = raw.read()
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    if not raw:
+        return {"response": ""}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {"response": str(raw)}
+    return parsed if isinstance(parsed, dict) else {"response": parsed}

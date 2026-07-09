@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+env/
+*.egg
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# CDK
+infrastructure/cdk.out/
+cdk.out/
+*.js.snapshot/
+
+# Env / secrets / outputs
+.env
+.env.*
+!.env.example
+frontend/.env
+outputs.json
+*.pem
+.tavily_key
+**/.tavily_key
+
+# Local deployment state & build artifacts (environment-specific — never publish)
+agentcore/.bedrock_agentcore.yaml
+.bedrock_agentcore/
+**/.bedrock_agentcore/
+
+# Local experiment scaffolding (contains environment-specific identifiers)
+experiments/
+
+# Extra local virtualenvs
+.venv*/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# Coverage
+coverage/
+.coverage
+htmlcov/

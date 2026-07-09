@@ -1,0 +1,4 @@
+# Dependencies for the end-to-end smoke test (scripts/smoke_test.py).
+# Only needed when authenticating with email/password; the SMOKE_ID_TOKEN path
+# uses the standard library only.
+pycognito>=2024.5.1
