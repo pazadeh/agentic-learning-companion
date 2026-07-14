@@ -31,6 +31,9 @@ API Gateway (Cognito authorizer, throttled)
 DynamoDB: Profiles · Lectures · Jobs (TTL) · RateLimits (TTL)
 ```
 
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed diagrams of the system design,
+the multi-agent architecture, and the end-to-end request lifecycle.
+
 ## Layout
 
 | Path | What |
