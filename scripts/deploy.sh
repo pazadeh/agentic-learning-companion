@@ -3,7 +3,7 @@
 #
 # Prerequisites (see DEPLOYMENT.md):
 #   - AWS CLI configured (personal account, NOT Isengard), region us-east-1
-#   - Bedrock model access granted for Claude 3.5 Haiku + Sonnet
+#   - Bedrock access to Claude Sonnet 4.6 (auto-enabled in commercial regions)
 #   - CDK bootstrapped:  npx cdk bootstrap
 #   - ALLOWED_EMAILS env var set (comma-separated allowlist)
 #   - ALERT_EMAIL env var set (for budget/alarm notifications)

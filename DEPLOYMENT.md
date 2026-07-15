@@ -33,7 +33,7 @@ There is nothing to request.
 > Seeing `us.anthropic.claude-sonnet-4-6` confirms availability. The app uses the
 > US cross-region inference profile by default (override via `ORCHESTRATOR_MODEL_ID`
 > / `LECTURE_MODEL_ID`). For top-tier prose you can later set
-> `LECTURE_MODEL_ID=us.anthropic.claude-opus-4-6-v1`. There is no Haiku in the 4.6 family.
+> `LECTURE_MODEL_ID=us.anthropic.claude-opus-4-8`. There is no Haiku in the Sonnet 4.6 family.
 >
 > Note: a provider may still gate *first use* behind a one-time form. **Anthropic
 > requires a one-time "use case details" (First-Time-Use) form per AWS account**
@@ -134,7 +134,7 @@ regions, e.g.:
 }
 ```
 
-(Add the Opus 4.6 profile/model ARNs too if you set `LECTURE_MODEL_ID` to Opus.)
+(Add the Opus 4.8 profile/model ARNs too if you set `LECTURE_MODEL_ID` to Opus.)
 
 Once deployed, copy the agent **runtime ARN** and redeploy the stack so the job
 Lambda can invoke it:

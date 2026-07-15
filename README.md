@@ -69,8 +69,8 @@ export ALLOWED_EMAILS="you@example.com"
 ./scripts/deploy.sh
 ```
 
-> Deployment requires your own AWS account, Bedrock model access (Claude 3.5
-> Haiku + Sonnet in us-east-1), and a Tavily API key. Nothing is deployed for you.
+> Deployment requires your own AWS account, Bedrock access to Claude Sonnet 4.6 in
+> us-east-1, and a Tavily API key. Nothing is deployed for you.
 
 ## License
 
