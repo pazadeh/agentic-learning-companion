@@ -28,6 +28,9 @@ logger = logging.getLogger("audio_companion.security.ratelimit")
 LIMITS: dict[str, int] = {
     "lecture": 20,
     "chat": 100,
+    # Planning is cheaper than lecture generation but still invokes a model. The
+    # API and AgentCore both enforce this as defense in depth, matching flat jobs.
+    "series_plan": 20,
 }
 
 DEFAULT_LIMIT = 100

@@ -86,9 +86,15 @@ USER_ID=<cognito sub>
 # Audio objects
 aws s3 rm "s3://<AudioBucket>/audio/${USER_ID}/" --recursive
 
-# Profile
-aws dynamodb delete-item --table-name <ProfilesTable> \
-  --key "{\"pk\":{\"S\":\"USER#${USER_ID}\"},\"sk\":{\"S\":\"PROFILE\"}}"
+# Explicit profile and short-lived playback-session records
+aws dynamodb query --table-name <ProfilesTable> \
+  --key-condition-expression "pk = :p" \
+  --expression-attribute-values "{\":p\":{\"S\":\"USER#${USER_ID}\"}}" \
+  --query "Items[].sk.S" --output text | tr '\t' '\n' | while read -r SK; do
+    [ -z "$SK" ] && continue
+    aws dynamodb delete-item --table-name <ProfilesTable> \
+      --key "{\"pk\":{\"S\":\"USER#${USER_ID}\"},\"sk\":{\"S\":\"${SK}\"}}"
+  done
 
 # Lectures (query then delete each LECTURE# item)
 aws dynamodb query --table-name <LecturesTable> \
@@ -97,6 +103,24 @@ aws dynamodb query --table-name <LecturesTable> \
   --query "Items[].sk.S" --output text | tr '\t' '\n' | while read -r SK; do
     aws dynamodb delete-item --table-name <LecturesTable> \
       --key "{\"pk\":{\"S\":\"USER#${USER_ID}\"},\"sk\":{\"S\":\"${SK}\"}}"
+  done
+
+# Series summaries and their episode rows
+aws dynamodb query --table-name <SeriesTable> \
+  --key-condition-expression "pk = :p" \
+  --expression-attribute-values "{\":p\":{\"S\":\"USER#${USER_ID}\"}}" \
+  --query "Items[].seriesId.S" --output text | tr '\t' '\n' | while read -r SERIES_ID; do
+    [ -z "$SERIES_ID" ] && continue
+    aws dynamodb query --table-name <SeriesTable> \
+      --key-condition-expression "pk = :p" \
+      --expression-attribute-values "{\":p\":{\"S\":\"SERIES#${SERIES_ID}\"}}" \
+      --query "Items[].sk.S" --output text | tr '\t' '\n' | while read -r SK; do
+        [ -z "$SK" ] && continue
+        aws dynamodb delete-item --table-name <SeriesTable> \
+          --key "{\"pk\":{\"S\":\"SERIES#${SERIES_ID}\"},\"sk\":{\"S\":\"${SK}\"}}"
+      done
+    aws dynamodb delete-item --table-name <SeriesTable> \
+      --key "{\"pk\":{\"S\":\"USER#${USER_ID}\"},\"sk\":{\"S\":\"SERIES#${SERIES_ID}\"}}"
   done
 
 # Finally, delete the Cognito user (see allowlist section).

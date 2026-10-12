@@ -2,7 +2,8 @@
 
 A personalized audio learning web app powered by a multi-agent AI system on AWS.
 Ask the AI to teach you any topic; it researches the subject, writes a personalized
-lecture tailored to your knowledge level and learning style, synthesizes it to audio,
+lecture tailored to your knowledge level and learning style, learns from completed
+listening activity with transparent privacy controls, synthesizes it to audio,
 and lets you listen with full playback controls on any phone or browser.
 
 Designed for private use by 1–5 allowlisted users, deployed publicly with strong
@@ -23,12 +24,13 @@ API Gateway (Cognito authorizer, throttled)
    ├─► async_job Lambda ──► Bedrock AgentCore (Strands multi-agent)
    │                           ├─ orchestrator (Claude Sonnet 4.6)
    │                           ├─ research_agent (Tavily)
+   │                           ├─ series_planner (Claude Sonnet 4.6)
    │                           ├─ lecture_agent (Claude Sonnet 4.6)
    │                           └─ audio_agent (Amazon Polly ─► S3)
    │
    └─► presign_audio Lambda ──► S3 (1-hour presigned URLs)
 
-DynamoDB: Profiles · Lectures · Jobs (TTL) · RateLimits (TTL)
+DynamoDB: Profiles · Lectures · Series · Jobs (TTL) · RateLimits (TTL)
 ```
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed diagrams of the system design,

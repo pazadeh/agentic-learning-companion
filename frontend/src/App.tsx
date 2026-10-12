@@ -2,6 +2,7 @@ import { useAuth } from './contexts/AuthContext';
 import { AppStateProvider, useAppState } from './contexts/AppStateContext';
 import { LoginPage } from './pages/LoginPage';
 import { ConversationPage } from './pages/ConversationPage';
+import { SeriesPage } from './pages/SeriesPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { LoadingSpinner } from './components/common/LoadingSpinner';
@@ -9,6 +10,7 @@ import type { AppPage } from './types';
 
 const NAV: { page: AppPage; label: string }[] = [
   { page: 'conversation', label: 'Chat' },
+  { page: 'series', label: 'Series' },
   { page: 'history', label: 'History' },
   { page: 'profile', label: 'Profile' },
 ];
@@ -35,6 +37,7 @@ function Shell() {
 
       <main className="app__main">
         {state.currentPage === 'conversation' && <ConversationPage />}
+        {state.currentPage === 'series' && <SeriesPage />}
         {state.currentPage === 'history' && <HistoryPage />}
         {state.currentPage === 'profile' && <ProfilePage />}
       </main>

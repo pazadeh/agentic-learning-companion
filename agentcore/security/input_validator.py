@@ -15,6 +15,11 @@ logger = logging.getLogger("audio_companion.security.input")
 
 MIN_MESSAGE_LENGTH = 1
 MAX_MESSAGE_LENGTH = 2000
+MIN_SERIES_EPISODES = 2
+MAX_SERIES_EPISODES = 8
+MIN_EPISODE_DURATION_MINUTES = 1
+MAX_EPISODE_DURATION_MINUTES = 30
+MAX_SERIES_TITLE_LENGTH = 200
 
 # Control characters that must never appear in user text. We allow the common
 # whitespace controls (tab, newline, carriage return) and reject the rest,
@@ -106,3 +111,58 @@ def validate_user_id(user_id: str) -> str:
 def validate_job_id(job_id: str) -> str:
     """Validate a job id (canonical UUID)."""
     return _validate_uuid(job_id, "job id")
+
+
+def validate_series_id(series_id: str) -> str:
+    """Validate a series id (canonical UUID)."""
+    return _validate_uuid(series_id, "series id")
+
+
+def validate_episode_id(episode_id: str) -> str:
+    """Validate a series episode id (canonical UUID)."""
+    return _validate_uuid(episode_id, "episode id")
+
+
+def _validate_bounded_int(value: object, label: str, minimum: int, maximum: int) -> int:
+    """Validate an integer without accepting booleans or numeric strings."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError(f"{label} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValidationError(f"{label} must be between {minimum} and {maximum}")
+    return value
+
+
+def validate_episode_count(value: object) -> int:
+    """Validate that a series contains between two and eight episodes."""
+    return _validate_bounded_int(
+        value,
+        "Episode count",
+        MIN_SERIES_EPISODES,
+        MAX_SERIES_EPISODES,
+    )
+
+
+def validate_episode_duration(value: object) -> int:
+    """Validate an episode's target duration in minutes."""
+    return _validate_bounded_int(
+        value,
+        "Episode duration",
+        MIN_EPISODE_DURATION_MINUTES,
+        MAX_EPISODE_DURATION_MINUTES,
+    )
+
+
+def validate_series_title(value: object) -> str:
+    """Validate and normalize a user-visible series or episode title."""
+    if not isinstance(value, str):
+        raise ValidationError("Series title must be a string")
+    title = value.strip()
+    if not title:
+        raise ValidationError("Series title must not be empty")
+    if len(title) > MAX_SERIES_TITLE_LENGTH:
+        raise ValidationError(
+            f"Series title must be at most {MAX_SERIES_TITLE_LENGTH} characters"
+        )
+    if _CONTROL_CHAR_RE.search(title):
+        raise ValidationError("Series title contains forbidden control characters")
+    return title

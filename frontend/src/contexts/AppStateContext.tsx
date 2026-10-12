@@ -16,6 +16,7 @@ type Action =
   | { type: 'SET_MESSAGES'; messages: ChatMessage[] }
   | { type: 'SET_LECTURE'; lecture: Lecture | null }
   | { type: 'SET_AUDIO_URL'; url: string | null }
+  | { type: 'SET_SELECTED_SERIES'; seriesId: string | null }
   | { type: 'SET_ONLINE'; online: boolean }
   | { type: 'TOGGLE_DRIVING_MODE' };
 
@@ -24,6 +25,7 @@ const initialState: AppState = {
   messages: [],
   currentLecture: null,
   audioUrl: null,
+  selectedSeriesId: null,
   isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
   drivingMode: getItem<boolean>(STORAGE_KEYS.drivingMode, false),
 };
@@ -40,6 +42,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, currentLecture: action.lecture };
     case 'SET_AUDIO_URL':
       return { ...state, audioUrl: action.url };
+    case 'SET_SELECTED_SERIES':
+      return { ...state, selectedSeriesId: action.seriesId };
     case 'SET_ONLINE':
       return { ...state, isOnline: action.online };
     case 'TOGGLE_DRIVING_MODE': {

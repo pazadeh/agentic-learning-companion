@@ -4,8 +4,7 @@ This wraps the AgentCore Memory *data plane* (`bedrock-agentcore` boto3 client):
 
 * ``record_interaction`` writes each conversation turn as an **event** (short-term
   memory). AgentCore's managed strategies then asynchronously extract long-term
-  **memory records** from those events (facts the learner cares about, and their
-  learning preferences).
+  **memory records** containing prior topics and semantic facts the learner cares about.
 * ``retrieve_user_memories`` does a semantic search over those long-term records
   for the current user and returns a compact text block to inject into the agent's
   system prompt, so the agent "remembers" prior sessions.
@@ -13,7 +12,8 @@ This wraps the AgentCore Memory *data plane* (`bedrock-agentcore` boto3 client):
 Everything fails open: if ``MEMORY_ID`` is unset or any call errors, the functions
 return empty / no-op so the agent still works (just without long-term recall). The
 ``actorId`` is always the verified user id, so a user can only ever touch their own
-namespaces (``users/<user_id>/facts`` and ``users/<user_id>/preferences``).
+namespaces (``users/<user_id>/facts``). Behavioral preferences are deliberately
+kept out of managed Memory and handled by the structured profile engine.
 """
 from __future__ import annotations
 
@@ -24,8 +24,9 @@ from . import config
 
 logger = logging.getLogger("audio_companion.agents.memory")
 
-# Namespaces must mirror the strategy namespaces declared in the CDK Memory resource.
-_NAMESPACES = ("facts", "preferences")
+# Preference records are deliberately not retrieved: structured explicit/inferred
+# settings are the only authoritative preference source and honor privacy/reset controls.
+_NAMESPACES = ("facts",)
 _TOP_K = 5
 
 
