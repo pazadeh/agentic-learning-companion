@@ -16,7 +16,31 @@ vi.mock('./services/api-client', () => ({
   getJobStatus: vi.fn(),
   getJobResult: vi.fn(),
   refreshAudioUrl: vi.fn(),
+  recordPlayback: vi.fn(),
+  getProfile: vi.fn(async () => ({
+    explicit: {
+      profession: '',
+      expertiseAreas: [],
+      learningGoals: [],
+      learningStyle: 'examples',
+      preferredDuration: 15,
+      behavioralPersonalizationEnabled: true,
+    },
+    inferred: { enabled: true, topicInterests: [] },
+    stats: { lecturesCompleted: 0, totalListeningSeconds: 0 },
+    revision: 0,
+    hasExplicitProfile: false,
+  })),
+  saveProfile: vi.fn(),
+  resetProfileInferences: vi.fn(),
   pollJobUntilDone: vi.fn(),
+  createSeriesDraft: vi.fn(),
+  listSeries: vi.fn(async () => ({ series: [] })),
+  getSeries: vi.fn(),
+  saveSeriesPlan: vi.fn(),
+  approveSeries: vi.fn(),
+  retrySeriesEpisode: vi.fn(),
+  pollSeriesUntilSettled: vi.fn(),
 }));
 
 import { getCurrentUser } from './services/cognito-auth';
@@ -63,6 +87,15 @@ describe('authenticated', () => {
     expect(screen.getByPlaceholderText('What would you like to learn?')).toBeInTheDocument();
   });
 
+  it('navigates to series', async () => {
+    await renderAuthed();
+    fireEvent.click(screen.getByRole('button', { name: 'Series' }));
+    expect(screen.getByRole('heading', { name: 'Lecture series' })).toBeInTheDocument();
+    expect(
+      await screen.findByText('No series yet. Choose Series in Chat to create a draft.')
+    ).toBeInTheDocument();
+  });
+
   it('navigates to history', async () => {
     await renderAuthed();
     fireEvent.click(screen.getByRole('button', { name: 'History' }));
@@ -74,7 +107,7 @@ describe('authenticated', () => {
   it('navigates to profile', async () => {
     await renderAuthed();
     fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
-    expect(screen.getByText('Profession')).toBeInTheDocument();
+    expect(await screen.findByText('Profession')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
   });
 });

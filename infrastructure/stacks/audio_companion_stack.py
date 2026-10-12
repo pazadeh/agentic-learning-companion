@@ -132,6 +132,7 @@ class AudioCompanionStack(Stack):
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True
             ),
+            time_to_live_attribute="ttl",
             removal_policy=RemovalPolicy.DESTROY,
         )
 
@@ -151,6 +152,21 @@ class AudioCompanionStack(Stack):
             index_name="GSI1",
             partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="createdAt", type=dynamodb.AttributeType.STRING),
+        )
+
+        # Durable multi-part lecture series: summaries (pk=USER#id, sk=SERIES#id)
+        # and ordered episodes (pk=SERIES#id, sk=EPISODE#nn). No TTL.
+        series_table = dynamodb.Table(
+            self,
+            "SeriesTable",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True
+            ),
+            removal_policy=RemovalPolicy.DESTROY,
         )
 
         jobs_table = dynamodb.Table(
@@ -177,28 +193,22 @@ class AudioCompanionStack(Stack):
         # ----------------------------------------------------------------- #
         # AgentCore Memory — long-term learner memory across sessions
         # ----------------------------------------------------------------- #
-        # Two managed strategies automatically extract long-term memories from the
-        # raw conversation events the agent records:
-        #   * SEMANTIC        -> facts the learner cares about / has covered
-        #   * USER_PREFERENCE -> how they like to learn (depth, style, pace)
+        # A managed semantic strategy extracts prior topics/facts. Behavioral
+        # preferences live in the structured profile engine so reset/disable controls
+        # have deterministic semantics.
         # Namespaces are per-user via the {actorId} placeholder (actorId = user id),
         # so one user can never retrieve another user's memories.
         memory = agentcore.Memory(
             self,
             "AgentMemory",
             memory_name="AudioCompanionMemory",
-            description="Long-term learner memory: facts learned and learning preferences.",
+            description="Long-term learner memory for prior topics and semantic facts.",
             expiration_duration=Duration.days(90),
             memory_strategies=[
                 agentcore.ManagedMemoryStrategy(
                     agentcore.MemoryStrategyType.SEMANTIC,
                     strategy_name="semantic_facts",
                     namespaces=["users/{actorId}/facts"],
-                ),
-                agentcore.ManagedMemoryStrategy(
-                    agentcore.MemoryStrategyType.USER_PREFERENCE,
-                    strategy_name="user_preferences",
-                    namespaces=["users/{actorId}/preferences"],
                 ),
             ],
         )
@@ -355,7 +365,9 @@ class AudioCompanionStack(Stack):
             layers=[security_layer],
             environment={
                 "JOBS_TABLE": jobs_table.table_name,
+                "PROFILES_TABLE": profiles_table.table_name,
                 "LECTURES_TABLE": lectures_table.table_name,
+                "SERIES_TABLE": series_table.table_name,
                 "RATE_LIMITS_TABLE": rate_limits_table.table_name,
                 "AGENT_RUNTIME_ARN": agent_runtime_arn,
                 "CORS_ALLOW_ORIGIN": cloudfront_origin,
@@ -381,9 +393,26 @@ class AudioCompanionStack(Stack):
 
         # IAM — scoped grants only
         jobs_table.grant_read_write_data(async_job_fn)
+        profiles_table.grant_read_write_data(async_job_fn)
         rate_limits_table.grant_read_write_data(async_job_fn)
-        # Read-only: the history endpoint lists the caller's saved lectures.
-        lectures_table.grant_read_data(async_job_fn)
+        # The worker lists history and deterministically upserts AgentCore results.
+        # This makes DynamoDB—not a device's local cache—the cross-device source of truth.
+        lectures_table.grant_read_write_data(async_job_fn)
+        # Series coordinator state (transactions use Put/Update/Delete on both tables).
+        series_table.grant_read_write_data(async_job_fn)
+        # CDK's DynamoDB read/write grant does not include TransactWriteItems.
+        # Series creation and every state transition atomically update both tables.
+        async_job_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["dynamodb:TransactWriteItems"],
+                resources=[
+                    jobs_table.table_arn,
+                    profiles_table.table_arn,
+                    lectures_table.table_arn,
+                    series_table.table_arn,
+                ],
+            )
+        )
         # Self async-invoke. Reference the ARN by its fixed name (not fn.function_arn)
         # so the role's policy doesn't create a circular dependency on the function.
         async_job_fn.add_to_role_policy(
@@ -431,7 +460,7 @@ class AudioCompanionStack(Stack):
             ),
             default_cors_preflight_options=apigw.CorsOptions(
                 allow_origins=[cloudfront_origin, "http://localhost:5173"],
-                allow_methods=["GET", "POST", "OPTIONS"],
+                allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                 allow_headers=["Authorization", "Content-Type"],
                 max_age=Duration.hours(1),
             ),
@@ -454,8 +483,36 @@ class AudioCompanionStack(Stack):
         job_id_res.add_resource("status").add_method("GET", job_integration, **auth_opts)
         job_id_res.add_resource("result").add_method("GET", job_integration, **auth_opts)
 
+        # Cloud-synced explicit profile and inspectable/resettable inferences.
+        profile = api.root.add_resource("profile")
+        profile.add_method("GET", job_integration, **auth_opts)
+        profile.add_method("PUT", job_integration, **auth_opts)
+        profile.add_resource("inferences").add_method("GET", job_integration, **auth_opts)
+        profile.get_resource("inferences").add_method("DELETE", job_integration, **auth_opts)
+
         # Lecture history — lists the caller's saved lectures across devices.
-        api.root.add_resource("lectures").add_method("GET", job_integration, **auth_opts)
+        lectures = api.root.add_resource("lectures")
+        lectures.add_method("GET", job_integration, **auth_opts)
+        (
+            lectures.add_resource("{lectureId}")
+            .add_resource("playback")
+            .add_method("POST", job_integration, **auth_opts)
+        )
+
+        # Multi-part lecture series — same Lambda, Cognito-protected.
+        series_res = api.root.add_resource("series")
+        series_res.add_method("GET", job_integration, **auth_opts)
+        series_res.add_resource("drafts").add_method("POST", job_integration, **auth_opts)
+        series_id_res = series_res.add_resource("{seriesId}")
+        series_id_res.add_method("GET", job_integration, **auth_opts)
+        series_id_res.add_resource("plan").add_method("POST", job_integration, **auth_opts)
+        series_id_res.add_resource("approve").add_method("POST", job_integration, **auth_opts)
+        (
+            series_id_res.add_resource("episodes")
+            .add_resource("{episodeId}")
+            .add_resource("retry")
+            .add_method("POST", job_integration, **auth_opts)
+        )
 
         audio = api.root.add_resource("audio")
         audio.add_resource("refresh").add_method("POST", presign_integration, **auth_opts)
@@ -473,7 +530,7 @@ class AudioCompanionStack(Stack):
                 response_headers={
                     "Access-Control-Allow-Origin": f"'{cloudfront_origin}'",
                     "Access-Control-Allow-Headers": "'Authorization,Content-Type'",
-                    "Access-Control-Allow-Methods": "'GET,POST,OPTIONS'",
+                    "Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
                 },
             )
 
@@ -504,6 +561,7 @@ class AudioCompanionStack(Stack):
         CfnOutput(self, "ProfilesTableName", value=profiles_table.table_name)
         CfnOutput(self, "LecturesTableName", value=lectures_table.table_name)
         CfnOutput(self, "JobsTableName", value=jobs_table.table_name)
+        CfnOutput(self, "SeriesTableName", value=series_table.table_name)
         CfnOutput(self, "RateLimitsTableName", value=rate_limits_table.table_name)
         CfnOutput(self, "MemoryId", value=memory.memory_id)
         CfnOutput(self, "MemoryArn", value=memory.memory_arn)

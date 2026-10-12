@@ -17,10 +17,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Make `import security.*` work (the package lives under agentcore/).
 sys.path.insert(0, str(ROOT / "agentcore"))
+# The async-job handler imports its sibling `series` module, as in the Lambda package.
+sys.path.insert(0, str(ROOT / "lambdas" / "async_job"))
 
 # Environment expected by the handlers/modules (values are placeholders; the AWS
 # clients themselves are monkeypatched in the tests).
 os.environ.setdefault("JOBS_TABLE", "JobsTableTest")
+os.environ.setdefault("PROFILES_TABLE", "ProfilesTableTest")
+os.environ.setdefault("LECTURES_TABLE", "LecturesTableTest")
+os.environ.setdefault("SERIES_TABLE", "SeriesTableTest")
 os.environ.setdefault("RATE_LIMITS_TABLE", "RateLimitsTableTest")
 os.environ.setdefault("AUDIO_BUCKET", "audio-bucket-test")
 os.environ.setdefault("AWS_LAMBDA_FUNCTION_NAME", "async-job-test")

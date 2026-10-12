@@ -37,9 +37,16 @@ def get_user_profile(user_id: str) -> str:
     """
     item = (
         _profiles_table()
-        .get_item(Key={"pk": f"USER#{user_id}", "sk": "PROFILE"})
+        .get_item(Key={"pk": f"USER#{user_id}", "sk": "PROFILE#EXPLICIT"})
         .get("Item")
     )
+    if not item:
+        # Backward-compatible read for profiles created before cloud profile sync.
+        item = (
+            _profiles_table()
+            .get_item(Key={"pk": f"USER#{user_id}", "sk": "PROFILE"})
+            .get("Item")
+        )
     if not item:
         return json.dumps(
             {
@@ -77,7 +84,7 @@ def save_user_profile(user_id: str, profile_json: str) -> str:
         return json.dumps({"ok": False, "error": "profile must be an object"})
 
     now = int(time.time())
-    item = {"pk": f"USER#{user_id}", "sk": "PROFILE", "updatedAt": now}
+    item = {"pk": f"USER#{user_id}", "sk": "PROFILE#EXPLICIT", "updatedAt": now}
     allowed = {
         "profession",
         "expertiseAreas",
@@ -137,6 +144,7 @@ def save_lecture(user_id: str, lecture_json: str) -> str:
         "durationMinutes": duration_minutes,
         "knowledgeLevel": lecture.get("knowledgeLevel", ""),
         "sources": lecture.get("sources", []),
+        "personalizationUsed": produced.get("personalizationUsed", {}),
         "createdAt": created_at,
     }
     if lecture.get("script"):

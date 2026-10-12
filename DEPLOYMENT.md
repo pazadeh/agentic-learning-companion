@@ -163,9 +163,29 @@ deactivate && cd ..
 - [ ] Ask "Teach me about black holes" → progress shows → audio plays.
 - [ ] Playback controls work: play/pause, ±15s, speed 0.5×–2×, seek.
 - [ ] The lecture appears in **History**; reopening it refreshes a fresh audio URL.
-- [ ] Profile edits persist across reloads.
+- [ ] Profile edits persist after signing in on a second device.
+- [ ] Listening for at least 20 seconds updates History progress and Profile statistics.
+- [ ] Learned preferences appear only after repeated completed lectures; explicit
+      profile settings and instructions in the current request take priority.
+- [ ] Disabling behavioral personalization hides learned preferences; resetting them
+      preserves playback/history statistics but excludes earlier evidence.
 - [ ] Visiting an audio URL after ~1 hour fails (presigned URL expired) — refresh works.
 - [ ] Hitting the API without a token returns 401.
+- [ ] Chat → **Series** → "Teach me *Thinking, Fast and Slow* in 4 × 30-minute
+      lectures" → a draft appears under **Series**, then a 4-episode plan to review.
+- [ ] Edit the plan (reorder, change a duration), save, then approve. Episodes
+      generate one at a time and each becomes playable as soon as it completes.
+
+Lecture series add a `SeriesTable` (output `SeriesTableName`) used only by the job
+Lambda. No new AgentCore permissions are needed: the runtime already writes the
+Lectures table, which it uses to tag episode lectures with their series. **Redeploy
+the AgentCore agent** too, since it now handles `request_type=series_plan`.
+
+For an **existing deployment**, deploy the backward-compatible AgentCore update
+first, then redeploy the CDK stack/Lambda and frontend. This avoids exposing the
+Series UI while an older runtime still rejects planning requests. Fresh deployments
+should continue to follow steps 5–7 because the AgentCore environment needs the
+stack outputs.
 
 ## 9a. Automated smoke test (optional)
 

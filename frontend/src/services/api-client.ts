@@ -1,10 +1,20 @@
 /** Authenticated API client for the backend.
  *
  * Attaches the Cognito ID token to every request, exposes typed helpers for each
- * endpoint, and provides a polling helper that resolves when a job finishes.
+ * endpoint, and provides bounded polling helpers for asynchronous work.
  */
 import { getIdToken } from './cognito-auth';
-import type { Job } from '../types';
+import type {
+  Job,
+  Lecture,
+  PlaybackUpdate,
+  ProfileResponse,
+  SeriesDetail,
+  SeriesPlan,
+  SeriesStatus,
+  SeriesSummary,
+  UserProfile,
+} from '../types';
 
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
 
@@ -20,9 +30,10 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
   signal?: AbortSignal;
+  keepalive?: boolean;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -34,7 +45,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     'Content-Type': 'application/json',
   };
 
-  const init: RequestInit = { method: options.method ?? 'GET', headers };
+  const init: RequestInit = {
+    method: options.method ?? 'GET',
+    headers,
+    keepalive: options.keepalive,
+  };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   if (options.signal) init.signal = options.signal;
 
@@ -89,14 +104,7 @@ export function refreshAudioUrl(s3Key: string): Promise<RefreshAudioResponse> {
 }
 
 export interface ListLecturesResponse {
-  lectures: Array<{
-    lectureId: string;
-    title: string;
-    topic: string;
-    s3Key: string;
-    durationMinutes: number;
-    createdAt: string;
-  }>;
+  lectures: Lecture[];
 }
 
 /** Fetch the signed-in user's saved lectures from the backend (cross-device). */
@@ -104,7 +112,121 @@ export function listLectures(): Promise<ListLecturesResponse> {
   return request<ListLecturesResponse>('/lectures');
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+export function getProfile(): Promise<ProfileResponse> {
+  return request<ProfileResponse>('/profile');
+}
+
+export function saveProfile(
+  profile: Omit<UserProfile, 'email' | 'lecturesCompleted' | 'totalListeningTime'>,
+  revision: number
+): Promise<ProfileResponse> {
+  return request<ProfileResponse>('/profile', {
+    method: 'PUT',
+    body: { ...profile, revision },
+  });
+}
+
+export function resetProfileInferences(): Promise<{ ok: boolean; resetAt: string }> {
+  return request('/profile/inferences', { method: 'DELETE' });
+}
+
+export interface PlaybackResponse {
+  accepted: boolean;
+  duplicate?: boolean;
+  listenedSeconds?: number;
+  completionPercent?: number;
+  resumePositionSeconds?: number;
+}
+
+export function recordPlayback(
+  lectureId: string,
+  update: PlaybackUpdate
+): Promise<PlaybackResponse> {
+  return request<PlaybackResponse>(`/lectures/${encodeURIComponent(lectureId)}/playback`, {
+    method: 'POST',
+    body: update,
+    keepalive: true,
+  });
+}
+
+export interface CreateSeriesDraftRequest {
+  message: string;
+}
+
+export interface ListSeriesResponse {
+  series: SeriesSummary[];
+}
+
+export function createSeriesDraft(message: string, signal?: AbortSignal): Promise<SeriesDetail> {
+  return request<SeriesDetail>('/series/drafts', {
+    method: 'POST',
+    body: { message } satisfies CreateSeriesDraftRequest,
+    signal,
+  });
+}
+
+export function listSeries(signal?: AbortSignal): Promise<ListSeriesResponse> {
+  return request<ListSeriesResponse>('/series', { signal });
+}
+
+export function getSeries(seriesId: string, signal?: AbortSignal): Promise<SeriesDetail> {
+  return request<SeriesDetail>(`/series/${encodeURIComponent(seriesId)}`, { signal });
+}
+
+export function saveSeriesPlan(
+  seriesId: string,
+  plan: SeriesPlan,
+  revision: number,
+  signal?: AbortSignal
+): Promise<SeriesDetail> {
+  return request<SeriesDetail>(`/series/${encodeURIComponent(seriesId)}/plan`, {
+    method: 'POST',
+    body: { plan, revision },
+    signal,
+  });
+}
+
+export function approveSeries(
+  seriesId: string,
+  revision: number,
+  signal?: AbortSignal
+): Promise<SeriesDetail> {
+  return request<SeriesDetail>(`/series/${encodeURIComponent(seriesId)}/approve`, {
+    method: 'POST',
+    body: { revision },
+    signal,
+  });
+}
+
+export function retrySeriesEpisode(
+  seriesId: string,
+  episodeId: string,
+  signal?: AbortSignal
+): Promise<SeriesDetail> {
+  return request<SeriesDetail>(
+    `/series/${encodeURIComponent(seriesId)}/episodes/${encodeURIComponent(episodeId)}/retry`,
+    { method: 'POST', signal }
+  );
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function cancellableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms) as Promise<void>;
+  if (signal.aborted) return Promise.reject(new DOMException('Polling was cancelled', 'AbortError'));
+
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('Polling was cancelled', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 /** Poll a job until it completes or fails, reporting progress along the way. */
 export async function pollJobUntilDone(
@@ -126,4 +248,49 @@ export async function pollJobUntilDone(
     await sleep(intervalMs);
   }
   throw new ApiError('Timed out waiting for the lecture', 504, 'timeout');
+}
+
+export interface PollSeriesOptions {
+  signal?: AbortSignal;
+  onUpdate?: (series: SeriesDetail) => void;
+  intervalMs?: number;
+  /** Omit to poll until the series settles or the AbortSignal is cancelled. */
+  maxAttempts?: number;
+  pollWhile?: readonly SeriesStatus[];
+}
+
+/**
+ * Poll a series while it is doing asynchronous planning or generation work.
+ * Polling is bounded and aborts both in-flight requests and the delay between them.
+ */
+export async function pollSeriesUntilSettled(
+  seriesId: string,
+  options: PollSeriesOptions = {}
+): Promise<SeriesDetail> {
+  const {
+    signal,
+    onUpdate,
+    intervalMs = 2000,
+    maxAttempts,
+    pollWhile = ['planning', 'generating'],
+  } = options;
+
+  if (maxAttempts !== undefined && (!Number.isInteger(maxAttempts) || maxAttempts < 1)) {
+    throw new ApiError('maxAttempts must be a positive integer', 400, 'invalid_poll_limit');
+  }
+
+  let attempt = 0;
+  while (maxAttempts === undefined || attempt < maxAttempts) {
+    if (signal?.aborted) throw new DOMException('Polling was cancelled', 'AbortError');
+    const series = await getSeries(seriesId, signal);
+    onUpdate?.(series);
+    if (!pollWhile.includes(series.status)) return series;
+
+    attempt += 1;
+    if (maxAttempts === undefined || attempt < maxAttempts) {
+      await cancellableSleep(intervalMs, signal);
+    }
+  }
+
+  throw new ApiError('Timed out waiting for the series', 504, 'series_timeout');
 }

@@ -218,7 +218,7 @@ context each invocation, so a plain module-level store is safe.
 ### Long-term memory
 
 `AgentCore Memory` gives cross-session recall. Before the run, the entrypoint retrieves the
-learner's relevant long-term memories (facts + preferences, scoped to
+learner's relevant long-term memories (prior topics and semantic facts, scoped to
 `users/{user_id}/...`) and injects them into the orchestrator's system prompt. After the
 run, the turn is recorded as an event, from which AgentCore asynchronously extracts new
 long-term records. Memory **fails open** — if it's disabled or errors, the agent still runs
@@ -239,6 +239,7 @@ sequenceDiagram
     participant W as async_job (worker)
     participant AC as AgentCore + Orchestrator
     participant T as Tools/Sub-agents
+    participant DDB as DynamoDB library
     participant S3 as S3 audio
     participant PS as presign_audio
 
@@ -256,8 +257,9 @@ sequenceDiagram
     AC->>T: generate_lecture (writer sub-agent, stores script)
     AC->>T: synthesize_and_upload (Polly)
     T->>S3: put lecture.mp3
-    AC->>T: save_lecture (DynamoDB)
+    AC->>T: save_lecture (best-effort tool call)
     AC-->>W: { response, lecture }
+    W->>DDB: idempotent lecture metadata upsert
     W->>W: update job "completed" (result)
 
     loop poll until done
@@ -276,6 +278,106 @@ sequenceDiagram
 
 ---
 
+## 4. Multi-part lecture series
+
+Long subjects (for example a book across 4 × 30-minute lectures) are planned once,
+reviewed by the learner, then generated **one episode at a time**. Each episode is a
+normal lecture from the unchanged orchestrator pipeline (research → write → Polly →
+save), so a series adds coordination, not a second lecture implementation.
+
+```mermaid
+stateDiagram-v2
+    [*] --> planning: POST /series/drafts
+    planning --> ready_for_approval: planner (request_type=series_plan)
+    planning --> failed: planner error
+    ready_for_approval --> ready_for_approval: POST /plan (edit, revision-checked)
+    ready_for_approval --> generating: POST /approve (queues episode 1)
+    generating --> generating: episode N completes, N+1 queued
+    generating --> attention: an episode fails (later episodes wait)
+    attention --> generating: POST /episodes/{id}/retry
+    generating --> completed: last episode completes
+```
+
+- **Durable state** lives in `SeriesTable`: summaries at `pk=USER#{userId}`,
+  `sk=SERIES#{seriesId}`; ordered episodes at `pk=SERIES#{seriesId}`,
+  `sk=EPISODE#{nn}`. Work items are `SERIES_PLAN` / `SERIES_EPISODE` rows in the
+  existing JobsTable, run by the same async worker Lambda (routed by `jobType`;
+  rows without `jobType` are flat lecture jobs, unchanged).
+- **Idempotency**: every transition is a conditional DynamoDB transaction keyed on
+  the episode's `activeJobId`. A duplicate or late worker delivery cannot claim the
+  same episode or enqueue the next one twice. Episode completion and queueing the
+  next episode happen in one transaction. If audio succeeds but that transaction
+  fails, a retry can leave an orphaned audio object; production exactly-once recovery
+  would require reconciliation by `episodeId`.
+- **Failure and retry**: a failed episode pauses the series (`attention`) with a
+  user-safe error. Retry is allowed for a failed episode, or one stalled longer than
+  the 15-minute worker timeout, and creates a new job. The sequence then resumes.
+- **Planner**: `agentcore/agents/series_planner.py` returns strict JSON (2–8 episodes,
+  1–30 minutes each). It honors an explicit count/length in the request and never
+  generates a lecture.
+- **Episode requests** include the series title, the episode's focus, and the full
+  outline so each lecture stays in scope and links to its neighbors. AgentCore tags
+  the saved lecture row with `seriesId`, `episodeId`, and `episodeOrder`.
+- **Suggestions are advisory**: Chat has an explicit Lecture/Series choice. An explicit
+  multi-lecture request in Lecture mode asks before doing anything. After a broad
+  topic (book, history, deep dive) produces one lecture, Chat offers a series. The
+  app never converts a request on its own.
+
+Step Functions is intentionally not used yet. The API and schema keep the runner
+replaceable, and the current agent loop could later move to AgentCore Harness
+episode by episode.
+
+---
+
+## 5. Behavioral learner profile
+
+The learner model separates declared settings from behavioral evidence. Explicit
+settings are stored at `ProfilesTable: USER#{userId} / PROFILE#EXPLICIT`; temporary
+playback-session checkpoints use `PLAYBACK#{lectureId}#{sessionId}` and expire after
+seven days via TTL. Durable listening aggregates remain on the learner-owned lecture
+row.
+
+```mermaid
+flowchart LR
+    request["Current request"] --> resolver["Deterministic profile resolver"]
+    explicit["Explicit profile<br/>user-controlled"] --> resolver
+    lectures["Lecture + playback history<br/>confidence · decay · reset generation"] --> inference["Explainable inference"]
+    inference --> resolver
+    defaults["Application defaults"] --> resolver
+    resolver -->|"request > explicit > confident inference > default"| agent["AgentCore orchestrator"]
+    agent --> generated["Lecture + personalizationUsed"]
+    generated --> lectures
+    player["Audio player<br/>actual media time consumed"] -->|"20s heartbeat / pause / ended"| playback["Authenticated playback API"]
+    playback --> lectures
+
+    classDef declared fill:#e8f0fe,stroke:#4285f4,color:#1a1a1a;
+    classDef inferred fill:#e6f4ea,stroke:#34a853,color:#1a1a1a;
+    classDef runtime fill:#fef7e0,stroke:#f9ab00,color:#1a1a1a;
+    class explicit,request declared;
+    class lectures,inference,playback inferred;
+    class resolver,agent,generated,player,defaults runtime;
+```
+
+- **Signals**: generated topics contribute weak interest evidence; ≥80% actual
+  listening contributes duration/style/depth evidence. Old evidence decays over a
+  180-day horizon. At least three independent samples and 70% confidence are required
+  before an inference can affect generation.
+- **Playback integrity**: the client accumulates media time consumed from wall-clock
+  playback time × playback rate. Seeking does not count. Cumulative session updates
+  are sequence-numbered and conditionally transacted with the lecture aggregate, so
+  duplicate delivery cannot double-count.
+- **Privacy**: behavioral personalization can be disabled. Reset or consent changes
+  atomically advance an `inferenceGeneration`; playback transactions are revision-fenced
+  and write only to the active generation. Older or delayed evidence therefore remains
+  permanently excluded without deleting factual playback progress/history. Explicit
+  settings always remain visible and authoritative.
+- **Observability**: each generated lecture stores `personalizationUsed`, including
+  the value, source (`current_request`, `explicit`, `inferred`, or `default`), and
+  confidence. AgentCore Memory remains supplemental semantic context rather than the
+  preference source of truth.
+
+---
+
 ## Where things live
 
 | Path | What |
@@ -285,7 +387,8 @@ sequenceDiagram
 | `agentcore/agents/{research,lecture,audio}_agent.py` | Specialist sub-agents/tools |
 | `agentcore/agents/{profile_store,memory,run_context,research_ranking,config}.py` | Persistence, memory, shared context, ranking, config/model ids |
 | `agentcore/security/` | Input validation, rate limiting, content filter, audit logging |
-| `lambdas/async_job/` | Job API + async worker that invokes AgentCore |
+| `lambdas/async_job/` | Job API + async worker; `series.py` coordinates lecture series and `learner_profile.py` handles explicit profiles, playback, and inference |
+| `agentcore/agents/series_planner.py` | Strict-JSON lecture-series planner |
 | `lambdas/presign_audio/` | Own-prefix presigned audio URLs |
 | `infrastructure/` | AWS CDK v2 (Python) — all cloud resources |
 | `frontend/` | React 19 + TypeScript + Vite PWA |

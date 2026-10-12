@@ -34,7 +34,7 @@ export function HistoryPage() {
           return {
             ...r,
             isFavorite: prior?.isFavorite ?? false,
-            completionPercent: prior?.completionPercent ?? 0,
+            completionPercent: r.completionPercent ?? prior?.completionPercent ?? 0,
           };
         });
         setLectures(merged);

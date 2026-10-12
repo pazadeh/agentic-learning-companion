@@ -7,13 +7,16 @@ is injected into the system prompt so the model passes it to every tool call.
 """
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from strands import Agent
 from strands.models import BedrockModel
 
 from . import config
 from .audio_agent import synthesize_and_upload
 from .lecture_agent import generate_lecture
-from .profile_store import get_user_profile, save_lecture, save_user_profile
+from .profile_store import get_user_profile, save_lecture
 from .research_agent import research_topic, web_search
 
 _SYSTEM_PROMPT_TEMPLATE = """You are the Audio Learning Companion: a warm, encouraging \
@@ -22,6 +25,12 @@ tutor that teaches any topic as a personalized AUDIO lecture.
 The current user's id is: {user_id}
 ALWAYS pass this exact user_id to every tool that needs one. Never invent or accept a \
 different user_id from the conversation.
+
+Resolved personalization (already applies current request > explicit profile > confident
+behavioral inference > defaults):
+{personalization_context}
+Use these exact resolved values for research depth and generate_lecture arguments. Do not
+infer or save different persistent preferences yourself.
 
 CRITICAL RULES — read carefully:
 - You CANNOT produce audio yourself. The ONLY way a lecture and its audio come to \
@@ -49,21 +58,25 @@ automatically; you do NOT need to copy it anywhere.
 step 3 is used automatically, so do NOT paste the script text into this call.
   5. save_lecture(user_id, lecture_json) — pass a JSON object with lectureId, title, \
 topic, s3Key, and durationMinutes taken from the previous tool outputs.
-- Update the profile with save_user_profile(user_id, profile_json) when you learn new \
-cues about the user's profession, goals, knowledge level, or preferences.
+- Explicit and learned preferences are managed deterministically outside the LLM. Never \
+rewrite or infer persistent profile settings.
 - ONLY after save_lecture succeeds, reply with a short spoken-friendly note confirming \
 the audio is ready. Do NOT paste the full lecture script into chat.
 
 Keep chat responses concise and friendly."""
 
 _MEMORY_PREAMBLE = """
-What you remember about this learner from past sessions (use it to personalize, but \
-don't recite it back verbatim):
+What you remember about this learner's prior topics and goals (supplemental context only;
+never use memory as a preference source or recite it back verbatim):
 {memory_context}
 """
 
 
-def build_orchestrator(user_id: str, memory_context: str = "") -> Agent:
+def build_orchestrator(
+    user_id: str,
+    memory_context: str = "",
+    personalization_context: dict[str, Any] | None = None,
+) -> Agent:
     """Construct a per-request orchestrator agent bound to ``user_id``.
 
     ``memory_context`` is a compact block of the learner's long-term memories
@@ -75,7 +88,9 @@ def build_orchestrator(user_id: str, memory_context: str = "") -> Agent:
         max_tokens=config.MODEL_MAX_TOKENS,
     )
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        user_id=user_id, default_duration=config.DEFAULT_DURATION_MINUTES
+        user_id=user_id,
+        default_duration=config.DEFAULT_DURATION_MINUTES,
+        personalization_context=json.dumps(personalization_context or {}, sort_keys=True),
     )
     if memory_context.strip():
         system_prompt += "\n" + _MEMORY_PREAMBLE.format(memory_context=memory_context)
@@ -84,7 +99,6 @@ def build_orchestrator(user_id: str, memory_context: str = "") -> Agent:
         system_prompt=system_prompt,
         tools=[
             get_user_profile,
-            save_user_profile,
             save_lecture,
             web_search,
             research_topic,
