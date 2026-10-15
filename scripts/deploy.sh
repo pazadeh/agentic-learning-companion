@@ -59,6 +59,12 @@ if [[ -n "${AGENT_RUNTIME_ARN}" && -z "${AGENT_RUNTIME_ROLE_ARN}" ]]; then
   [[ "${AGENT_RUNTIME_ROLE_ARN}" == "None" ]] && AGENT_RUNTIME_ROLE_ARN=""
 fi
 
+if [[ -n "${AGENT_RUNTIME_ARN}" && -z "${AGENT_RUNTIME_ROLE_ARN}" ]]; then
+  echo "Unable to resolve the AgentCore runtime role; refusing to remove its managed policy." >&2
+  echo "Set AGENT_RUNTIME_ROLE_ARN explicitly and retry." >&2
+  exit 1
+fi
+
 CDK_CONTEXT=(-c "enableWaf=${ENABLE_WAF}")
 if [[ -n "${AGENT_RUNTIME_ARN}" ]]; then
   CDK_CONTEXT+=(-c "agentRuntimeArn=${AGENT_RUNTIME_ARN}")
