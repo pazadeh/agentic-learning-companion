@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useAppState } from '../contexts/AppStateContext';
 import { AudioPlayer } from '../components/audio/AudioPlayer';
+import { GenerationProgress } from '../components/generation/GenerationProgress';
 import { ErrorBanner } from '../components/common/ErrorBanner';
 import { SeriesSuggestionCard } from '../components/series/SeriesSuggestionCard';
 import {
@@ -18,7 +19,7 @@ import {
 import { getItem, setItem, STORAGE_KEYS } from '../utils/storage';
 import { hasSeriesPotential, isExplicitSeriesRequest } from '../utils/seriesSuggestion';
 import { usePlaybackTracking } from '../hooks/usePlaybackTracking';
-import type { ChatMessage, Lecture, LectureResult } from '../types';
+import type { ChatMessage, Job, Lecture, LectureResult } from '../types';
 
 type LearningMode = 'lecture' | 'series';
 
@@ -46,7 +47,7 @@ export function ConversationPage() {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<LearningMode>('lecture');
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [jobState, setJobState] = useState<Job | null>(null);
   const [error, setError] = useState('');
   const [listening, setListening] = useState(false);
   const [seriesSuggestion, setSeriesSuggestion] = useState<SeriesSuggestion | null>(null);
@@ -58,7 +59,7 @@ export function ConversationPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [state.messages, progress]);
+  }, [state.messages, jobState?.progress]);
 
   const persistLecture = useCallback((lecture: LectureResult) => {
     const stored = getItem<Lecture[]>(STORAGE_KEYS.lectures, []);
@@ -99,7 +100,7 @@ export function ConversationPage() {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
       setError('');
-      setProgress(0);
+      setJobState(null);
       setSeriesSuggestion(null);
 
       if (!options.skipUserMessage) {
@@ -147,7 +148,15 @@ export function ConversationPage() {
         }
 
         const { job_id } = await startJob(trimmed, 'lecture');
-        const job = await pollJobUntilDone(job_id, (p) => setProgress(p));
+        setJobState({
+          job_id,
+          status: 'pending',
+          progress: 0,
+          stage: 'queued',
+          stage_message: 'Queued for generation',
+          stage_detail: 'Waiting for a worker',
+        });
+        const job = await pollJobUntilDone(job_id, setJobState);
         const response = job.result?.response ?? 'Your lecture is ready.';
         dispatch({
           type: 'ADD_MESSAGE',
@@ -183,7 +192,7 @@ export function ConversationPage() {
         });
       } finally {
         setBusy(false);
-        setProgress(0);
+        setJobState(null);
       }
     },
     [busy, createDraft, dispatch, mode, persistLecture]
@@ -249,11 +258,13 @@ export function ConversationPage() {
             </div>
           ))}
           {busy && (
-            <div className="message message--assistant message--pending">
-              {mode === 'series'
-                ? 'Creating your editable series draft…'
-                : `Researching and writing your lecture… ${progress > 0 ? `${Math.round(progress)}%` : ''}`}
-            </div>
+            mode === 'series' ? (
+              <div className="message message--assistant message--pending">
+                Creating your editable series draft…
+              </div>
+            ) : (
+              <GenerationProgress job={jobState} />
+            )
           )}
           <div ref={messagesEndRef} />
         </div>

@@ -238,7 +238,12 @@ def _start_job(event: dict[str, Any]) -> dict[str, Any]:
             "jobId": job_id,
             "userId": user_id,
             "status": "pending",
+            "stage": "queued",
+            "stageMessage": "Queued for generation",
+            "stageDetail": "Waiting for a worker",
+            "stageSeq": 0,
             "progress": 0,
+            "progressUpdatedAt": now,
             "message": message,
             "action": action,
             "createdAt": now,
@@ -271,36 +276,37 @@ def _load_job_for_user(event: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _public_job_state(item: dict[str, Any]) -> dict[str, Any]:
+    state = {
+        "job_id": item["jobId"],
+        "status": item.get("status", "pending"),
+        "stage": item.get("stage", "queued"),
+        "progress": max(0, min(100, int(item.get("progress", 0)))),
+        "stage_message": item.get("stageMessage", "Preparing your lecture"),
+        "stage_detail": item.get("stageDetail", ""),
+        "updated_at": int(item.get("progressUpdatedAt", item.get("createdAt", 0))),
+    }
+    if item.get("publicError"):
+        state["error"] = item["publicError"]
+    return state
+
+
 def _job_status(event: dict[str, Any]) -> dict[str, Any]:
-    item = _load_job_for_user(event)
-    return _response(
-        200,
-        {
-            "job_id": item["jobId"],
-            "status": item.get("status", "pending"),
-            "progress": int(item.get("progress", 0)),
-        },
-    )
+    return _response(200, _public_job_state(_load_job_for_user(event)))
 
 
 def _job_result(event: dict[str, Any]) -> dict[str, Any]:
     item = _load_job_for_user(event)
     status = item.get("status", "pending")
     if status != "completed":
-        return _response(
-            200,
-            {"job_id": item["jobId"], "status": status, "progress": int(item.get("progress", 0))},
-        )
+        return _response(200, _public_job_state(item))
     result = item.get("result")
     if isinstance(result, str):
         try:
             result = json.loads(result)
         except json.JSONDecodeError:
             result = {"response": result}
-    return _response(
-        200,
-        {"job_id": item["jobId"], "status": "completed", "progress": 100, "result": result},
-    )
+    return _response(200, {**_public_job_state(item), "result": result})
 
 
 # --------------------------------------------------------------------------- #
@@ -339,8 +345,11 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
         raise RuntimeError("Agent result has an invalid lectureId") from exc
 
     s3_key = lecture.get("s3Key")
-    expected_key = f"audio/{user_id}/{lecture_id}/lecture.mp3"
-    if s3_key != expected_key:
+    allowed_keys = {
+        f"audio/{user_id}/{lecture_id}/lecture.mp3",
+        f"audio/{user_id}/{lecture_id}/lecture.wav",
+    }
+    if s3_key not in allowed_keys:
         raise RuntimeError("Agent result has an invalid audio key")
 
     duration = lecture.get("durationMinutes", 0)
@@ -359,7 +368,8 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
         Key={"pk": f"USER#{user_id}", "sk": f"LECTURE#{lecture_id}"},
         UpdateExpression=(
             "SET #lecture_id = :lecture_id, #title = :title, #topic = :topic, "
-            "#s3_key = :s3_key, #duration = :duration, #personalization = :personalization, "
+            "#s3_key = :s3_key, #duration = :duration, #audio_provider = :audio_provider, "
+            "#audio_format = :audio_format, #personalization = :personalization, "
             "#created_at = if_not_exists(#created_at, :created_at)"
         ),
         ExpressionAttributeNames={
@@ -368,6 +378,8 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
             "#topic": "topic",
             "#s3_key": "s3Key",
             "#duration": "durationMinutes",
+            "#audio_provider": "audioProvider",
+            "#audio_format": "audioFormat",
             "#personalization": "personalizationUsed",
             "#created_at": "createdAt",
         },
@@ -377,6 +389,8 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
             ":topic": str(lecture.get("topic", ""))[:2000],
             ":s3_key": s3_key,
             ":duration": duration_minutes,
+            ":audio_provider": str(lecture.get("audioProvider", ""))[:100],
+            ":audio_format": str(lecture.get("audioFormat", ""))[:20],
             ":personalization": lecture.get("personalizationUsed", {}),
             ":created_at": created_at,
         },
@@ -432,13 +446,51 @@ def _list_lectures(event: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Worker
 # --------------------------------------------------------------------------- #
-def _update_job(job_id: str, **fields: Any) -> None:
-    names = {f"#{k}": k for k in fields}
-    values = {f":{k}": v for k, v in fields.items()}
-    expr = "SET " + ", ".join(f"#{k} = :{k}" for k in fields)
+def _claim_flat_job(item: dict[str, Any]) -> Optional[str]:
+    claim_token = str(uuid.uuid4())
+    try:
+        _jobs_table().update_item(
+            Key={"jobId": item["jobId"]},
+            UpdateExpression=(
+                "SET #status = :processing, #progress = :progress, #stage = :stage, "
+                "stageMessage = :message, stageDetail = :detail, stageSeq = :sequence, "
+                "progressUpdatedAt = :updated, claimToken = :claim"
+            ),
+            ConditionExpression="#status = :pending",
+            ExpressionAttributeNames={
+                "#status": "status",
+                "#progress": "progress",
+                "#stage": "stage",
+            },
+            ExpressionAttributeValues={
+                ":pending": "pending",
+                ":processing": "processing",
+                ":progress": 5,
+                ":stage": "preparing",
+                ":message": "Preparing generation",
+                ":detail": "Worker started",
+                ":sequence": 1,
+                ":updated": int(time.time()),
+                ":claim": claim_token,
+            },
+        )
+        return claim_token
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+def _update_claimed_job(item: dict[str, Any], claim_token: str, **fields: Any) -> None:
+    names = {f"#{key}": key for key in fields}
+    names["#status_condition"] = "status"
+    names["#claim_condition"] = "claimToken"
+    values = {f":{key}": value for key, value in fields.items()}
+    values.update({":processing": "processing", ":claim": claim_token})
     _jobs_table().update_item(
-        Key={"jobId": job_id},
-        UpdateExpression=expr,
+        Key={"jobId": item["jobId"]},
+        UpdateExpression="SET " + ", ".join(f"#{key} = :{key}" for key in fields),
+        ConditionExpression="#status_condition = :processing AND #claim_condition = :claim",
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
     )
@@ -460,18 +512,42 @@ def _run_job(job_id: str) -> dict[str, Any]:
         return {"ok": False}
 
     user_id = item["userId"]
+    claim_token = _claim_flat_job(item)
+    if not claim_token:
+        return {"ok": True, "duplicate": True}
     try:
-        _update_job(job_id, status="processing", progress=10)
-
         if not AGENT_RUNTIME_ARN:
             raise RuntimeError("AGENT_RUNTIME_ARN is not configured")
 
-        result = _invoke_agent(user_id, item["message"], job_id)
-
-        _update_job(
+        result = _invoke_agent(
+            user_id,
+            item["message"],
             job_id,
+            extra={"claim_token": claim_token},
+        )
+        if result.get("error"):
+            raise RuntimeError(str(result["error"]))
+
+        _update_claimed_job(
+            item,
+            claim_token,
+            stage="finalizing",
+            stageMessage="Finalizing your lecture",
+            stageDetail="Saving the completed result",
+            stageSeq=1000,
+            progress=99,
+            progressUpdatedAt=int(time.time()),
+        )
+        _update_claimed_job(
+            item,
+            claim_token,
             status="completed",
+            stage="completed",
+            stageMessage="Your lecture is ready",
+            stageDetail="",
+            stageSeq=1001,
             progress=100,
+            progressUpdatedAt=int(time.time()),
             result=json.dumps(result),
         )
         log_event(
@@ -484,7 +560,17 @@ def _run_job(job_id: str) -> dict[str, Any]:
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Job %s failed", job_id)
-        _update_job(job_id, status="failed", progress=100, error=str(exc)[:500])
+        try:
+            _update_claimed_job(
+                item,
+                claim_token,
+                status="failed",
+                publicError="Lecture generation failed. Please try again.",
+                errorCode=type(exc).__name__,
+                progressUpdatedAt=int(time.time()),
+            )
+        except ClientError:
+            logger.info("Flat job failure was superseded by another worker")
         log_event(
             "job_complete",
             "failed",
@@ -494,6 +580,46 @@ def _run_job(job_id: str) -> dict[str, Any]:
             duration_ms=int((time.time() - started) * 1000),
         )
         return {"ok": False}
+
+
+def _report_lambda_progress(
+    user_id: str,
+    job_id: str,
+    stage: str,
+    percent: int,
+    message: str,
+    detail: str,
+    claim_token: str = "",
+) -> None:
+    names = {"#status": "status", "#stage": "stage"}
+    values: dict[str, Any] = {
+        ":processing": "processing",
+        ":user_id": user_id,
+        ":stage": stage,
+        ":progress": percent,
+        ":message": message,
+        ":detail": detail,
+        ":sequence": 5,
+        ":updated": int(time.time()),
+    }
+    condition = "#status = :processing AND userId = :user_id"
+    if claim_token:
+        names["#claim"] = "claimToken"
+        values[":claim"] = claim_token
+        condition += " AND #claim = :claim"
+    try:
+        _jobs_table().update_item(
+            Key={"jobId": job_id},
+            UpdateExpression=(
+                "SET #stage = :stage, progress = :progress, stageMessage = :message, "
+                "stageDetail = :detail, stageSeq = :sequence, progressUpdatedAt = :updated"
+            ),
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError:
+        logger.info("Lambda progress update was superseded")
 
 
 def _invoke_agent(
@@ -508,6 +634,16 @@ def _invoke_agent(
     ``request_type`` defaults to ``lecture`` so flat jobs send the same request as
     before; series jobs add ``series_plan`` or episode metadata via ``extra``.
     """
+    claim_token = str((extra or {}).get("claim_token", ""))
+    _report_lambda_progress(
+        user_id,
+        job_id,
+        "personalizing",
+        10,
+        "Personalizing your lecture",
+        "Resolving your requested depth, style, and duration",
+        claim_token,
+    )
     personalization_context = learner_profile.resolve_personalization(user_id, message)
     body: dict[str, Any] = {
         **(extra or {}),
@@ -517,7 +653,7 @@ def _invoke_agent(
         "request_type": request_type,
         "personalization_context": personalization_context,
     }
-    payload = json.dumps(body)
+    payload = json.dumps(_to_jsonable(body))
     response = _agentcore().invoke_agent_runtime(
         agentRuntimeArn=AGENT_RUNTIME_ARN,
         runtimeSessionId=job_id,

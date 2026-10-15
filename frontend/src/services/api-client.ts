@@ -231,19 +231,19 @@ function cancellableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 /** Poll a job until it completes or fails, reporting progress along the way. */
 export async function pollJobUntilDone(
   jobId: string,
-  onProgress?: (progress: number, status: Job['status']) => void,
+  onUpdate?: (job: Job) => void,
   intervalMs = 2000
 ): Promise<Job> {
-  // Guard against runaway polling (15 min worker timeout / 2s ≈ 450).
+  // Guard against runaway polling (20 minutes at the default interval).
   const maxAttempts = 600;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const status = await getJobStatus(jobId);
-    onProgress?.(status.progress ?? 0, status.status);
+    onUpdate?.(status);
     if (status.status === 'completed') {
       return getJobResult(jobId);
     }
     if (status.status === 'failed') {
-      throw new ApiError('Lecture generation failed', 500, 'job_failed');
+      throw new ApiError(status.error ?? 'Lecture generation failed', 500, 'job_failed');
     }
     await sleep(intervalMs);
   }

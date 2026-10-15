@@ -15,7 +15,7 @@ from typing import Any
 
 from strands import tool
 
-from . import config, research_ranking
+from . import config, progress, research_ranking
 
 logger = logging.getLogger("audio_companion.agents.research")
 
@@ -124,6 +124,13 @@ def research_topic(topic: str, depth: str = "standard") -> str:
     n_by_depth = {"quick": 3, "standard": 5, "deep": 8}
     n_searches = min(n_by_depth.get(depth, 5), config.MAX_SEARCHES_PER_LECTURE)
 
+    progress.report(
+        "researching",
+        30,
+        "Researching reliable sources",
+        f"Preparing {n_searches} search angles",
+    )
+
     # Varied angles, including ones biased toward authoritative material (textbooks,
     # lecture notes, peer-reviewed research). Trimmed to the number of searches.
     angles = [
@@ -139,12 +146,18 @@ def research_topic(topic: str, depth: str = "standard") -> str:
 
     seen_urls: set[str] = set()
     collected: list[dict[str, Any]] = []
-    for angle in angles:
+    for index, angle in enumerate(angles, start=1):
         for result in _tavily_search(angle):
             url = result.get("url", "")
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 collected.append(result)
+        progress.report(
+            "researching",
+            30 + round(index / max(len(angles), 1) * 12),
+            "Researching reliable sources",
+            f"Search {index} of {len(angles)} · {len(collected)} sources found",
+        )
 
     # Rank the full set first, then (optionally) keep only trusted tiers, then cap —
     # so trusted filtering doesn't get pre-empted by the source cap.
@@ -157,6 +170,12 @@ def research_topic(topic: str, depth: str = "standard") -> str:
         trusted = research_ranking.filter_trusted(ranked_all)
         ranked_all = trusted or ranked_all  # fall back so a lecture is never blocked
     ranked = ranked_all[: config.RESEARCH_MAX_SOURCES]
+    progress.report(
+        "researching",
+        44,
+        "Research complete",
+        f"Selected {len(ranked)} sources from {len(collected)} results",
+    )
 
     tier_breakdown: dict[str, int] = {}
     for src in ranked:

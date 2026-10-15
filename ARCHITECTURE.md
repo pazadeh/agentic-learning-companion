@@ -6,22 +6,25 @@ a hardened AWS serverless stack. A learner asks to be taught a topic; the system
 researches it, writes a lecture tailored to their knowledge level and learning style,
 synthesizes it to speech, and serves it back for playback.
 
-This document covers three views:
+This document covers five views:
 
-1. [System architecture](#1-system-architecture) — the end-to-end AWS design.
-2. [Multi-agent architecture](#2-multi-agent-architecture) — the orchestrator and its
-   specialist sub-agents.
-3. [Request lifecycle](#3-request-lifecycle) — how one "teach me X" request flows through
-   the whole system.
+1. [System architecture](#1-system-architecture) — the deployed AWS topology.
+2. [Multi-agent architecture](#2-multi-agent-architecture) — orchestration and specialist agents.
+3. [Lecture request lifecycle](#3-lecture-request-lifecycle) — one asynchronous lecture run.
+4. [Multi-part lecture series](#4-multi-part-lecture-series) — durable sequential generation.
+5. [Adaptive learner profile](#5-adaptive-learner-profile) — explicit settings, playback evidence, inference, and privacy.
+
+For endpoint request/response contracts, see [API.md](./API.md).
 
 ---
 
 ## 1. System architecture
 
-Every request is authenticated with a Cognito JWT (email-allowlisted, MFA-enforced) and
-passes through WAF and a throttled API Gateway before reaching any compute. Lecture
+Static application traffic is served through CloudFront and WAF. The browser calls the
+API Gateway endpoint directly; every API route is authenticated with a Cognito ID token,
+CORS-restricted to the CloudFront origin, and throttled before reaching Lambda. Lecture
 generation is **asynchronous**: the API accepts a job, returns immediately, and a worker
-drives the long-running agent run in the background.
+drives the long-running AgentCore run in the background.
 
 ```mermaid
 flowchart TB
@@ -47,40 +50,40 @@ flowchart TB
 
     subgraph data["State & Storage"]
         direction TB
-        ddb[("DynamoDB<br/><i>Profiles · Lectures (GSI1)<br/>Jobs (TTL) · RateLimits (TTL)</i>")]
+        ddb[("DynamoDB<br/><i>Profiles + playback sessions (TTL)<br/>Lectures (GSI1) · Series<br/>Jobs (TTL) · RateLimits (TTL)</i>")]
         s3static[("S3<br/><i>static frontend</i>")]
-        s3audio[("S3<br/><i>lecture audio (MP3)</i>")]
+        s3audio[("S3<br/><i>lecture audio (Nova WAV · legacy Polly MP3)</i>")]
         secrets["Secrets Manager<br/><i>Tavily API key</i>"]
         cw["CloudWatch Logs<br/><i>metadata-only audit trail</i>"]
     end
 
     subgraph ext["External / AWS AI Services"]
         direction TB
-        bedrock["Amazon Bedrock<br/><i>Claude Sonnet 4.6</i>"]
-        polly["Amazon Polly<br/><i>neural TTS · Joanna</i>"]
-        acmemory["AgentCore Memory<br/><i>long-term learner recall</i>"]
+        bedrock["Amazon Bedrock<br/><i>Claude Sonnet 5.5 · Haiku 5.5</i>"]
+        speech["Amazon Nova 2.5 Sonic<br/><i>segmented narration · Tiffany</i><br/>Polly Neural rollback"]
+        acmemory["AgentCore Memory<br/><i>prior topics + semantic facts</i>"]
         tavily["Tavily<br/><i>web search API</i>"]
     end
 
-    user -->|"HTTPS"| cf
-    cf -->|"static assets"| s3static
-    cf -->|"/api/*"| apigw
+    user -->|"HTTPS · static app"| cf
+    cf -->|"private S3 origin"| s3static
+    user -->|"HTTPS · Cognito ID token"| apigw
     user -.->|"sign in / MFA"| cognito
     cognito -.->|"PreSignUp trigger"| presignup
     apigw -->|"verified JWT claims"| asyncjob
     apigw -->|"verified JWT claims"| presign
 
-    asyncjob -->|"job records (TTL)"| ddb
+    asyncjob -->|"jobs · profiles · playback<br/>lectures · series"| ddb
     asyncjob -->|"async self-invoke<br/>(worker)"| asyncjob
     asyncjob -->|"invoke_agent_runtime"| agentcore
     presign -->|"presign own-prefix key"| s3audio
 
     agentcore --> bedrock
-    agentcore --> polly
+    agentcore --> speech
     agentcore --> acmemory
     agentcore --> tavily
-    agentcore -->|"profiles · lectures"| ddb
-    agentcore -->|"upload MP3"| s3audio
+    agentcore -->|"read profile · save lecture<br/>update job progress"| ddb
+    agentcore -->|"upload WAV / MP3 rollback"| s3audio
     agentcore -->|"read Tavily key"| secrets
     agentcore -->|"audit events"| cw
     asyncjob -->|"audit events"| cw
@@ -97,9 +100,22 @@ flowchart TB
     class apigw,asyncjob,presign apiCls;
     class agentcore computeCls;
     class ddb,s3static,s3audio,secrets,cw dataCls;
-    class bedrock,polly,acmemory,tavily extCls;
+    class bedrock,speech,acmemory,tavily extCls;
     class user userCls;
 ```
+
+### Deployment units
+
+The repository produces two independently deployed compute units:
+
+1. **CDK stack** — CloudFront/WAF, Cognito, API Gateway, Lambdas, DynamoDB, S3,
+   Secrets Manager, AgentCore Memory, alarms, and budgets.
+2. **AgentCore runtime** — packaged from `agentcore/` and referenced by ARN from the
+   async Lambda environment.
+
+The React build is uploaded to the CDK-managed frontend bucket. For shared contract
+changes, deploy AgentCore first (backward-compatible payload handling), then the CDK
+stack/Lambdas, then the frontend. See [DEPLOYMENT.md](./DEPLOYMENT.md).
 
 ### Security chain
 
@@ -121,14 +137,17 @@ validate input  ->  rate limit  ->  content filter  ->  invoke agent  ->  audit 
 
 Identity is never trusted from the request body: the `user_id` always comes from the
 verified Cognito JWT (`requestContext.authorizer.claims.sub`), and audio keys are scoped to
-`audio/{user_id}/...` so a user can only ever presign their own files.
+`audio/{user_id}/...` so a user can only ever presign their own files. WAF protects the
+CloudFront-hosted web application; API Gateway independently protects the direct API path
+with Cognito authorization, request throttling, restrictive CORS, and per-user application
+rate limits.
 
 ---
 
 ## 2. Multi-agent architecture
 
-The **orchestrator** is the conversational brain (Claude Sonnet 4.6). It never writes the
-lecture or produces audio itself — its job is to coordinate. Each specialist capability is
+The **orchestrator** is the conversational controller (Claude Sonnet 5.5, low effort).
+It never writes the lecture or produces audio itself—its job is to coordinate. Each specialist capability is
 exposed to it as a **Strands tool**; some of those tools are themselves agent-backed
 (`generate_lecture` spins up a dedicated writer sub-agent). A shared, per-invocation
 `run_context` carries the large lecture script and final metadata between tools without
@@ -136,18 +155,20 @@ round-tripping through the orchestrator LLM.
 
 ```mermaid
 flowchart TB
-    entry["AgentCore entrypoint (main.py)<br/><i>security chain · injects memory · holds run lock</i>"]
+    resolved["Resolved personalization<br/><i>request > explicit > inferred > default</i>"]
+    entry["AgentCore entrypoint (main.py)<br/><i>security chain · facts memory · run lock</i>"]
 
-    subgraph orch["Orchestrator Agent — Claude Sonnet 4.6"]
+    subgraph orch["Orchestrator Agent — Claude Sonnet 5.5 (low)"]
         brain["Conversational controller<br/><i>drives the mandated tool sequence</i>"]
     end
 
     subgraph tools["Specialist tools (agents & functions)"]
         direction TB
-        profile["Profile tools<br/><i>get / save profile · save lecture</i>"]
+        profile["Persistence tools<br/><i>get explicit profile · save lecture</i>"]
+        planner["Series Planner Agent<br/><i>strict JSON · Claude Haiku 5.5 (low)</i>"]
         research["Research Agent<br/><i>research_topic · web_search</i>"]
         ranking["Source ranking<br/><i>authority + relevance tiers</i>"]
-        lecture["Lecture Agent<br/><i>writer sub-agent · Claude Sonnet 4.6</i><br/>iterative long-form script"]
+        lecture["Lecture Agent<br/><i>writer sub-agent · Claude Sonnet 5.5 (low)</i><br/>iterative · target factor 0.8"]
         audio["Audio Agent<br/><i>chunk · synthesize · upload</i>"]
     end
 
@@ -158,12 +179,14 @@ flowchart TB
         ddb[("DynamoDB<br/>Profiles · Lectures")]
         tavily["Tavily web search"]
         bedrock["Amazon Bedrock"]
-        polly["Amazon Polly"]
+        speech["Amazon Nova 2.5 Sonic<br/>Polly Neural rollback"]
         s3audio[("S3 audio bucket")]
         acmemory["AgentCore Memory"]
     end
 
-    entry -->|"build_orchestrator(user_id, memory_context)"| brain
+    resolved --> entry
+    entry -->|"lecture: build_orchestrator(...)"| brain
+    entry -->|"series_plan"| planner
     entry -.->|"retrieve_user_memories"| acmemory
     entry -.->|"record_interaction (turn event)"| acmemory
 
@@ -173,13 +196,14 @@ flowchart TB
     brain -->|"4 · synthesize + upload"| audio
     brain -->|"5 · persist metadata"| profile
 
+    planner --> bedrock
     profile --> ddb
     research --> tavily
     research --> ranking
     lecture --> bedrock
     lecture -->|"set_script"| runctx
     audio -->|"get_script"| runctx
-    audio --> polly
+    audio --> speech
     audio --> s3audio
     audio -->|"set_lecture"| runctx
     profile -->|"get_lecture"| runctx
@@ -192,20 +216,30 @@ flowchart TB
 
     class entry entryCls;
     class brain orchCls;
-    class profile,research,ranking,lecture,audio toolCls;
-    class runctx ctxCls;
-    class ddb,tavily,bedrock,polly,s3audio,acmemory backCls;
+    class profile,planner,research,ranking,lecture,audio toolCls;
+    class resolved,runctx ctxCls;
+    class ddb,tavily,bedrock,speech,s3audio,acmemory backCls;
 ```
 
 ### The agents
 
+Model IDs below are evaluated defaults. Runtime environment overrides can select an
+available fallback; the current live account uses Sonnet 4.6 for text roles while its
+5.5 profiles remain unavailable for invocation.
+
 | Agent / tool | Model | Responsibility |
 |---|---|---|
-| **Orchestrator** | `us.anthropic.claude-sonnet-4-6` | Conversational controller. Loads the profile, then drives the fixed tool sequence; never teaches directly and never claims completion without a real `s3Key`. |
+| **Orchestrator** | `us.anthropic.claude-sonnet-5-5` (low, between-tools) | Conversational controller. Loads the profile, then drives the fixed tool sequence; never teaches directly and never claims completion without a real `s3Key`. |
 | **Research Agent** | — (Tavily API) | Runs several varied search "angles" (quick/standard/deep = 3/5/8 queries), deduplicates, and ranks sources by domain **authority** blended with **relevance**. Optional trusted-only mode keeps academic/reference/encyclopedic tiers. |
-| **Lecture Agent** | `us.anthropic.claude-sonnet-4-6` | Spins up a dedicated writer sub-agent that composes the spoken-word script **iteratively** (continuation passes) to reliably hit the target length (~150 wpm), then stores the full script in `run_context`. |
-| **Audio Agent** | — (Amazon Polly neural) | Splits the script on sentence boundaries into ≤3000-char chunks, synthesizes each with Polly (Joanna), concatenates the MP3 frames, and uploads to `audio/{user_id}/{lecture_id}/lecture.mp3`. |
-| **Profile tools** | — (DynamoDB) | `get_user_profile` / `save_user_profile` / `save_lecture`. Persist learner preferences and lecture history, always scoped to the verified `user_id`. |
+| **Series Planner Agent** | `us.anthropic.claude-haiku-5-5` (low, thinking off) | Produces a validated 2–8 episode JSON plan only. It never researches, writes lecture prose, or synthesizes audio. |
+| **Lecture Agent** | `us.anthropic.claude-sonnet-5-5` (low, target factor 0.8) | Composes spoken prose iteratively and stores the full script in `run_context`. The calibrated target corrects model verbosity while preserving requested spoken duration. |
+| **Audio Agent** | — (Nova 2.5 Sonic; Polly rollback) | Splits prose into ≤900-word sentence-aligned sessions (~6 minutes each), streams each through Nova with Tiffany, retries a failed session without publishing partial audio, adds short faded joins, and uploads one 24 kHz PCM WAV to `audio/{user_id}/{lecture_id}/lecture.wav`. `NARRATION_PROVIDER=polly` restores Neural Joanna MP3 generation. |
+| **Persistence tools** | — (DynamoDB) | `get_user_profile` supplies user-declared context and `save_lecture` persists history. Profile writes are authenticated API operations—not model-controlled tool calls. |
+
+Nova sessions are individually bounded to 180 seconds with at most two attempts, and
+the complete narration has a 660-second deadline. This leaves time for research,
+writing, upload, and trusted persistence inside Lambda's 15-minute / AgentCore's
+870-second synchronous envelope.
 
 ### Why `run_context`?
 
@@ -226,7 +260,7 @@ using just the DynamoDB profile.
 
 ---
 
-## 3. Request lifecycle
+## 3. Lecture request lifecycle
 
 An end-to-end "teach me X" lecture request, from tap to playback:
 
@@ -250,13 +284,15 @@ sequenceDiagram
     API-->>U: 202 { job_id }
     API-)W: async self-invoke (Event)
 
-    W->>AC: invoke_agent_runtime(user_id, message)
+    W->>DDB: read explicit profile + recent lecture evidence
+    W->>W: resolve request > explicit > inferred > default
+    W->>AC: invoke_agent_runtime(message, personalization_context)
     AC->>AC: security chain + inject memory
     AC->>T: get_user_profile
     AC->>T: research_topic (Tavily + ranking)
     AC->>T: generate_lecture (writer sub-agent, stores script)
-    AC->>T: synthesize_and_upload (Polly)
-    T->>S3: put lecture.mp3
+    AC->>T: synthesize_and_upload (Nova Sonic sessions)
+    T->>S3: put lecture.wav
     AC->>T: save_lecture (best-effort tool call)
     AC-->>W: { response, lecture }
     W->>DDB: idempotent lecture metadata upsert
@@ -272,9 +308,33 @@ sequenceDiagram
     API-->>U: { lecture: { s3Key, ... } }
     U->>PS: POST presign { s3_key } (JWT)
     PS->>PS: verify key under audio/{user_id}/
-    PS-->>U: presigned MP3 URL (1h)
-    U->>S3: GET MP3 (presigned)
+    PS-->>U: presigned audio URL (1h)
+    U->>S3: GET WAV or legacy MP3 (presigned)
 ```
+
+### Live generation progress
+
+`invoke_agent_runtime` is synchronous from Lambda's perspective, so the waiting Lambda
+cannot observe internal tool execution. Instead, the validated AgentCore entrypoint binds
+the trusted `job_id`, user id, and optional claim token, and tools publish best-effort,
+monotonic updates directly to the owned Jobs row. The AgentCore role receives scoped
+access to update JobsTable, upload under the audio prefix, and invoke Nova Sonic.
+
+| Progress band | Stage | Real completion signal |
+|---:|---|---|
+| 0–20% | Queue, validation, memory | Worker claimed; request validated; semantic context retrieved |
+| 25% | Personalization | Explicit learner profile loaded |
+| 30–44% | Research | Each Tavily search angle completed; sources ranked |
+| 45–69% | Writing | Initial draft and any continuation/closing passes completed |
+| 70–88% | Speech synthesis | Each real Nova session (or Polly rollback segment) completed |
+| 90–93% | Upload | WAV/MP3 upload started/completed |
+| 94–95% | Save | Lecture persisted to the user's library |
+| 98–100% | Finalize | Worker validated response, persisted result, and completed job |
+
+`stageSeq` prevents late lower-stage writes. Flat workers and series planners use fencing
+tokens; series episode UI reads stage data from the active job while keeping episode
+lifecycle state (`queued`, `processing`, `completed`, `failed`) separate. Progress is a
+set of operation landmarks—not an estimate of elapsed time.
 
 ---
 
@@ -282,7 +342,7 @@ sequenceDiagram
 
 Long subjects (for example a book across 4 × 30-minute lectures) are planned once,
 reviewed by the learner, then generated **one episode at a time**. Each episode is a
-normal lecture from the unchanged orchestrator pipeline (research → write → Polly →
+normal lecture from the unchanged orchestrator pipeline (research → write → narrate →
 save), so a series adds coordination, not a second lecture implementation.
 
 ```mermaid
@@ -303,15 +363,17 @@ stateDiagram-v2
   `sk=EPISODE#{nn}`. Work items are `SERIES_PLAN` / `SERIES_EPISODE` rows in the
   existing JobsTable, run by the same async worker Lambda (routed by `jobType`;
   rows without `jobType` are flat lecture jobs, unchanged).
-- **Idempotency**: every transition is a conditional DynamoDB transaction keyed on
-  the episode's `activeJobId`. A duplicate or late worker delivery cannot claim the
-  same episode or enqueue the next one twice. Episode completion and queueing the
-  next episode happen in one transaction. If audio succeeds but that transaction
+- **Idempotency and recovery**: flat jobs, planners, and episode workers claim only
+  `pending` rows, so at-least-once redelivery cannot replace healthy active work.
+  Planner tokens and episode `activeJobId` conditions fence final transitions; duplicate
+  or late workers cannot enqueue the next episode twice. Episode completion and queueing
+  the next episode happen in one transaction. If audio succeeds but that transaction
   fails, a retry can leave an orphaned audio object; production exactly-once recovery
   would require reconciliation by `episodeId`.
 - **Failure and retry**: a failed episode pauses the series (`attention`) with a
-  user-safe error. Retry is allowed for a failed episode, or one stalled longer than
-  the 15-minute worker timeout, and creates a new job. The sequence then resumes.
+  user-safe error. Retry is allowed for a failed episode, or when the active job's
+  progress heartbeat has been stale for the lease interval, and creates a new job. The
+  sequence then resumes without replacing a healthy long-running narration.
 - **Planner**: `agentcore/agents/series_planner.py` returns strict JSON (2–8 episodes,
   1–30 minutes each). It honors an explicit count/length in the request and never
   generates a lecture.
@@ -329,7 +391,7 @@ episode by episode.
 
 ---
 
-## 5. Behavioral learner profile
+## 5. Adaptive learner profile
 
 The learner model separates declared settings from behavioral evidence. Explicit
 settings are stored at `ProfilesTable: USER#{userId} / PROFILE#EXPLICIT`; temporary
@@ -364,8 +426,10 @@ flowchart LR
   before an inference can affect generation.
 - **Playback integrity**: the client accumulates media time consumed from wall-clock
   playback time × playback rate. Seeking does not count. Cumulative session updates
-  are sequence-numbered and conditionally transacted with the lecture aggregate, so
-  duplicate delivery cannot double-count.
+  carry sequence numbers and occurrence timestamps, are serialized/retried by the
+  client, and are conditionally transacted with the profile revision and lecture
+  aggregate. Duplicate delivery cannot double-count, and delayed pre-reset events
+  cannot cross into a newer inference generation.
 - **Privacy**: behavioral personalization can be disabled. Reset or consent changes
   atomically advance an `inferenceGeneration`; playback transactions are revision-fenced
   and write only to the active generation. Older or delayed evidence therefore remains
@@ -375,6 +439,35 @@ flowchart LR
   the value, source (`current_request`, `explicit`, `inferred`, or `default`), and
   confidence. AgentCore Memory remains supplemental semantic context rather than the
   preference source of truth.
+
+### DynamoDB data model
+
+| Table | Key shape | Purpose / lifecycle |
+|---|---|---|
+| Profiles | `USER#{userId}` / `PROFILE#EXPLICIT` | Revisioned, user-authored settings plus consent and active inference generation; durable. |
+| Profiles | `USER#{userId}` / `PLAYBACK#{lectureId}#{sessionId}` | Sequence checkpoint for idempotent playback ingestion; seven-day TTL. |
+| Lectures | `USER#{userId}` / `LECTURE#{lectureId}` | Durable playback metadata, `personalizationUsed`, listening aggregates, and optional series tags; `GSI1(pk, createdAt)` supports newest-first history. |
+| Series | `USER#{userId}` / `SERIES#{seriesId}` | Durable series summary, revision, progress, and planner fencing token. |
+| Series | `SERIES#{seriesId}` / `EPISODE#{order}` | Ordered episode plan and generation state; durable. |
+| Jobs | `jobId` | Flat lecture, series-plan, and series-episode work records; 24-hour TTL. |
+| RateLimits | `USER#{userId}` / action bucket | Per-user action counters; two-hour TTL. |
+
+All user-facing reads begin with the verified Cognito subject. No endpoint accepts an
+authoritative user id from request JSON. See [API.md](./API.md) for contracts and status
+transitions.
+
+### Consistency boundaries
+
+- **Profile edits** use one strongly consistent snapshot and optimistic `revision`
+  checks; stale cross-device saves return `409`.
+- **Playback ingestion** atomically checks the active profile revision, advances the
+  per-session sequence, and updates the lecture aggregate. Client retries are safe.
+- **Inference privacy** uses generation-specific counters. Reset, disable, and re-enable
+  advance the generation so older, opted-out, or delayed evidence cannot reappear.
+- **Lecture completion** requires the trusted worker's deterministic metadata upsert
+  before a job is marked complete.
+- **Series planning** uses claim-token fencing across Jobs and Series rows; episode
+  completion and queueing the next episode are one transaction.
 
 ---
 
@@ -392,3 +485,6 @@ flowchart LR
 | `lambdas/presign_audio/` | Own-prefix presigned audio URLs |
 | `infrastructure/` | AWS CDK v2 (Python) — all cloud resources |
 | `frontend/` | React 19 + TypeScript + Vite PWA |
+| `ARCHITECTURE.md` | Topology, agent graph, lifecycles, data model, and consistency boundaries |
+| `API.md` | Authenticated endpoint contracts and errors |
+| `DEPLOYMENT.md` / `RUNBOOK.md` | Deployment, validation, operations, recovery, and erasure |

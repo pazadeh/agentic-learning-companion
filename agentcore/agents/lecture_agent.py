@@ -21,7 +21,7 @@ import logging
 from strands import Agent, tool
 from strands.models import BedrockModel
 
-from . import config, run_context
+from . import config, progress, run_context
 
 logger = logging.getLogger("audio_companion.agents.lecture")
 
@@ -33,14 +33,17 @@ a warm conversational tone. This lecture may be written in several parts; only g
 closing recap when you are explicitly asked to conclude. Above all, produce the full \
 requested length — do not stop early or wrap up prematurely."""
 
-# Stop growing the script once it nears Polly's hard synthesis cap (leave headroom).
-_MAX_SCRIPT_CHARS = config.POLLY_MAX_TOTAL_CHARS - 2000
+# Stop growing the script near the provider-neutral synthesis cap (leave headroom).
+_MAX_SCRIPT_CHARS = config.MAX_SCRIPT_CHARS - 2000
 # Bound on how many "continue" passes we make, to cap latency and cost.
 _MAX_CONTINUATIONS = 6
 
 
 def _word_target(duration_minutes: int) -> int:
-    return max(1, int(duration_minutes)) * config.WORDS_PER_MINUTE
+    return max(
+        1,
+        round(int(duration_minutes) * config.WORDS_PER_MINUTE * config.LECTURE_TARGET_FACTOR),
+    )
 
 
 def _extract_text(result) -> str:
@@ -81,6 +84,12 @@ def _write_script(writer: Agent, first_prompt: str, word_target: int) -> str:
     naturally follows on from the previous text.
     """
     script = _extract_text(writer(first_prompt))
+    progress.report(
+        "writing",
+        min(63, 48 + round(len(script.split()) / max(word_target, 1) * 15)),
+        "Writing your lecture",
+        f"Drafted {len(script.split())} of about {word_target} words",
+    )
     # Consider "close enough" at 90% of target so we don't over-generate.
     threshold = int(word_target * 0.9)
 
@@ -99,6 +108,12 @@ def _write_script(writer: Agent, first_prompt: str, word_target: int) -> str:
         if len(addition.split()) < 20:  # writer had nothing meaningful to add
             break
         script = f"{script}\n\n{addition}".strip()
+        progress.report(
+            "writing",
+            min(67, 48 + round(len(script.split()) / max(word_target, 1) * 19)),
+            "Expanding your lecture",
+            f"Drafted {len(script.split())} of about {word_target} words",
+        )
 
     # Ask for a brief spoken closing if we haven't clearly wrapped up.
     if len(script) < _MAX_SCRIPT_CHARS:
@@ -110,6 +125,12 @@ def _write_script(writer: Agent, first_prompt: str, word_target: int) -> str:
         )
         if 0 < len(closing.split()) < 400:
             script = f"{script}\n\n{closing}".strip()
+            progress.report(
+                "writing",
+                68,
+                "Adding the closing summary",
+                f"Lecture contains {len(script.split())} words",
+            )
 
     return _truncate_to_sentence(script, _MAX_SCRIPT_CHARS)
 
@@ -159,16 +180,29 @@ def generate_lecture(
         "markdown, no headings."
     )
 
+    progress.report(
+        "writing",
+        45,
+        "Writing your personalized lecture",
+        f"Targeting about {word_target} spoken words",
+    )
     model = BedrockModel(
         model_id=config.LECTURE_MODEL_ID,
         region_name=config.AWS_REGION,
         max_tokens=config.MODEL_MAX_TOKENS,
+        additional_request_fields=config.model_request_fields(config.LECTURE_MODEL_ID),
     )
     writer = Agent(model=model, system_prompt=_LECTURE_SYSTEM_PROMPT)
     script = _write_script(writer, first_prompt, word_target)
 
     # Hand the full script to the synthesis step directly (not via the orchestrator).
     run_context.set_script(script)
+    progress.report(
+        "writing",
+        69,
+        "Lecture script complete",
+        f"{len(script.split())} words ready for audio",
+    )
 
     title = topic.strip().capitalize()
     word_count = len(script.split())

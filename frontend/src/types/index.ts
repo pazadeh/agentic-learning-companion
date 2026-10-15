@@ -58,10 +58,31 @@ export interface LectureResult {
   personalizationUsed?: PersonalizationUsed;
 }
 
+export type GenerationStage =
+  | 'queued'
+  | 'preparing'
+  | 'personalizing'
+  | 'validating'
+  | 'recalling'
+  | 'profiling'
+  | 'researching'
+  | 'planning'
+  | 'writing'
+  | 'synthesizing'
+  | 'uploading'
+  | 'saving'
+  | 'finalizing'
+  | 'completed';
+
 export interface Job {
   job_id: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress: number;
+  stage?: GenerationStage;
+  stage_message?: string;
+  stage_detail?: string;
+  updated_at?: number;
+  error?: string;
   result?: { response: string; lecture?: LectureResult };
 }
 
@@ -124,6 +145,9 @@ export interface SeriesEpisode {
   durationMinutes: number;
   status: SeriesEpisodeStatus;
   progress: number;
+  stage?: GenerationStage;
+  stageMessage?: string;
+  stageDetail?: string;
   attemptCount?: number;
   lectureId?: string;
   s3Key?: string;

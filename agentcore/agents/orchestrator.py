@@ -1,6 +1,6 @@
 """Orchestrator agent — the conversational brain that coordinates the others.
 
-Runs on Claude Sonnet 4.6 (fast, capable, supports tool use well) and drives the
+Runs on the configured orchestration model (Sonnet 5.5 by default) and drives the
 full flow via tools: load the learner's profile, research the topic, write a
 personalized lecture, synthesize audio, and save everything. The current user's id
 is injected into the system prompt so the model passes it to every tool call.
@@ -54,7 +54,7 @@ unless the user wants a deep dive.
 learning_style) — write the script. Default duration is {default_duration} minutes \
 unless the user specifies one. (~150 words per minute.) The full script is stored \
 automatically; you do NOT need to copy it anywhere.
-  4. synthesize_and_upload(lecture_title, user_id) — produce the MP3. The script from \
+  4. synthesize_and_upload(lecture_title, user_id) — produce and upload the audio. The script from \
 step 3 is used automatically, so do NOT paste the script text into this call.
   5. save_lecture(user_id, lecture_json) — pass a JSON object with lectureId, title, \
 topic, s3Key, and durationMinutes taken from the previous tool outputs.
@@ -86,6 +86,7 @@ def build_orchestrator(
         model_id=config.ORCHESTRATOR_MODEL_ID,
         region_name=config.AWS_REGION,
         max_tokens=config.MODEL_MAX_TOKENS,
+        additional_request_fields=config.model_request_fields(config.ORCHESTRATOR_MODEL_ID),
     )
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         user_id=user_id,

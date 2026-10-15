@@ -310,11 +310,19 @@ def _public_summary(item: dict[str, Any]) -> dict[str, Any]:
 
 def _public_episode(item: dict[str, Any]) -> dict[str, Any]:
     status = item.get("status", "planned")
-    started = _int(item.get("startedAt")) or _int(item.get("queuedAt"))
+    active_job = None
+    if status in {"queued", "processing"} and item.get("activeJobId"):
+        active_job = _jobs_table().get_item(Key={"jobId": item["activeJobId"]}).get("Item")
+    heartbeat = (
+        _int((active_job or {}).get("progressUpdatedAt"))
+        or _int((active_job or {}).get("startedAt"))
+        or _int(item.get("startedAt"))
+        or _int(item.get("queuedAt"))
+    )
     stalled = (
         status in {"queued", "processing"}
-        and started > 0
-        and started <= _epoch() - STALE_EPISODE_SECONDS
+        and heartbeat > 0
+        and heartbeat <= _epoch() - STALE_EPISODE_SECONDS
     )
     episode = {
         "episodeId": item["episodeId"],
@@ -323,7 +331,10 @@ def _public_episode(item: dict[str, Any]) -> dict[str, Any]:
         "order": _int(item.get("order")),
         "durationMinutes": _int(item.get("durationMinutes")),
         "status": status,
-        "progress": _int(item.get("progress")),
+        "progress": _int((active_job or item).get("progress")),
+        "stage": (active_job or {}).get("stage"),
+        "stageMessage": (active_job or {}).get("stageMessage", ""),
+        "stageDetail": (active_job or {}).get("stageDetail", ""),
         "attemptCount": _int(item.get("attemptCount")),
         "retryable": status == "failed" or stalled,
     }
@@ -378,7 +389,12 @@ def _new_job(user_id: str, job_type: str, series_id: str, message: str, **extra:
         "seriesId": series_id,
         "message": message,
         "status": "pending",
+        "stage": "queued",
+        "stageMessage": "Queued for generation",
+        "stageDetail": "Waiting for a worker",
+        "stageSeq": 0,
         "progress": 0,
+        "progressUpdatedAt": now,
         "createdAt": now,
         "ttl": now + JOB_TTL_SECONDS,
         **{key: value for key, value in extra.items() if value is not None},
@@ -616,12 +632,26 @@ def retry_episode(event: dict[str, Any], user_id: str, response: Response, dispa
 
     status = episode.get("status")
     epoch = _epoch()
-    started = _int(episode.get("startedAt")) or _int(episode.get("queuedAt"))
-    stale = status in {"queued", "processing"} and started <= epoch - STALE_EPISODE_SECONDS
+    old_job = episode.get("activeJobId", "")
+    active_job = (
+        _jobs_table().get_item(Key={"jobId": old_job}).get("Item")
+        if old_job and status in {"queued", "processing"}
+        else None
+    )
+    heartbeat = (
+        _int((active_job or {}).get("progressUpdatedAt"))
+        or _int((active_job or {}).get("startedAt"))
+        or _int(episode.get("startedAt"))
+        or _int(episode.get("queuedAt"))
+    )
+    stale = (
+        status in {"queued", "processing"}
+        and heartbeat > 0
+        and heartbeat <= epoch - STALE_EPISODE_SECONDS
+    )
     if status != "failed" and not stale:
         return _error(response, 409, "invalid_state", "Only a failed or stalled episode can be retried.")
 
-    old_job = episode.get("activeJobId", "")
     job = _episode_job(summary, episodes, episode)
     now = _iso()
     try:
@@ -688,7 +718,7 @@ def run_job(job: dict[str, Any], invoke_agent: InvokeAgent, dispatch: Dispatch) 
 
 
 def _claim_job(job: dict[str, Any]) -> Optional[str]:
-    """Claim planning work with a fencing token; a redelivery supersedes safely."""
+    """Claim pending planning work; duplicate active deliveries are ignored."""
     claim_token = str(uuid.uuid4())
     try:
         _transact(
@@ -697,15 +727,20 @@ def _claim_job(job: dict[str, Any]) -> Optional[str]:
                     JOBS_TABLE,
                     {"jobId": job["jobId"]},
                     "SET #status = :processing, progress = :progress, startedAt = :now, "
-                    "claimToken = :claim",
+                    "claimToken = :claim, stage = :stage, stageMessage = :message, "
+                    "stageDetail = :detail, stageSeq = :sequence, progressUpdatedAt = :now",
                     {
                         ":processing": "processing",
                         ":progress": 10,
                         ":pending": "pending",
                         ":now": _epoch(),
                         ":claim": claim_token,
+                        ":stage": "planning",
+                        ":message": "Designing the lecture series",
+                        ":detail": "Creating a structured episode plan",
+                        ":sequence": 1,
                     },
-                    condition="#status = :pending OR #status = :processing",
+                    condition="#status = :pending",
                 ),
                 _update(
                     SERIES_TABLE,
@@ -733,7 +768,7 @@ def _run_plan(job: dict[str, Any], invoke_agent: InvokeAgent) -> dict[str, Any]:
     if not claim_token:
         return {"ok": True, "duplicate": True}
     try:
-        extra: dict[str, Any] = {}
+        extra: dict[str, Any] = {"claim_token": claim_token}
         if job.get("requestedEpisodeCount") is not None:
             extra["episode_count"] = _int(job["requestedEpisodeCount"])
         if job.get("requestedDurationMinutes") is not None:
@@ -841,8 +876,19 @@ def _claim_episode(job: dict[str, Any]) -> bool:
                 _update(
                     JOBS_TABLE,
                     {"jobId": job["jobId"]},
-                    "SET #status = :processing, progress = :ten",
-                    {":processing": "processing", ":ten": 10, ":pending": "pending"},
+                    "SET #status = :processing, progress = :ten, stage = :stage, "
+                    "stageMessage = :message, stageDetail = :detail, stageSeq = :sequence, "
+                    "progressUpdatedAt = :epoch",
+                    {
+                        ":processing": "processing",
+                        ":ten": 10,
+                        ":pending": "pending",
+                        ":stage": "preparing",
+                        ":message": "Preparing this episode",
+                        ":detail": "Starting the lecture pipeline",
+                        ":sequence": 1,
+                        ":epoch": _epoch(),
+                    },
                     condition="#status = :pending",
                 ),
                 _update(

@@ -3,7 +3,7 @@
 #
 # Prerequisites (see DEPLOYMENT.md):
 #   - AWS CLI configured (personal account, NOT Isengard), region us-east-1
-#   - Bedrock access to Claude Sonnet 4.6 (auto-enabled in commercial regions)
+#   - Bedrock access to Claude Sonnet 5.5 + Haiku 5.5 + Nova 2.5 Sonic
 #   - CDK bootstrapped:  npx cdk bootstrap
 #   - ALLOWED_EMAILS env var set (comma-separated allowlist)
 #   - ALERT_EMAIL env var set (for budget/alarm notifications)
@@ -18,7 +18,7 @@ STACK="AudioCompanionStack"
 echo "==> [1/5] Deploying infrastructure (CDK)…"
 cd "${ROOT}/infrastructure"
 if [[ ! -d ".venv-infra" ]]; then
-  python3.11 -m venv .venv-infra
+  python3.12 -m venv .venv-infra
 fi
 # shellcheck disable=SC1091
 source .venv-infra/bin/activate
@@ -30,9 +30,39 @@ pip install --quiet -r requirements.txt
 # WAF standing cost (re-enable before sharing the URL).
 ENABLE_WAF="${ENABLE_WAF:-true}"
 
+# Preserve an existing AgentCore runtime ARN during routine stack redeploys. Fresh
+# deployments have no function yet and intentionally deploy with an empty ARN until
+# step 7 in DEPLOYMENT.md. Set AGENT_RUNTIME_ARN to override explicitly.
+AGENT_RUNTIME_ARN="${AGENT_RUNTIME_ARN:-}"
+if [[ -z "${AGENT_RUNTIME_ARN}" ]]; then
+  AGENT_RUNTIME_ARN="$(aws lambda get-function-configuration \
+    --function-name audio-companion-async-job \
+    --query 'Environment.Variables.AGENT_RUNTIME_ARN' \
+    --output text 2>/dev/null || true)"
+  [[ "${AGENT_RUNTIME_ARN}" == "None" ]] && AGENT_RUNTIME_ARN=""
+fi
+
+AGENT_RUNTIME_ROLE_ARN="${AGENT_RUNTIME_ROLE_ARN:-}"
+if [[ -n "${AGENT_RUNTIME_ARN}" && -z "${AGENT_RUNTIME_ROLE_ARN}" ]]; then
+  RUNTIME_ID="${AGENT_RUNTIME_ARN##*/}"
+  AGENT_RUNTIME_ROLE_ARN="$(aws bedrock-agentcore-control get-agent-runtime \
+    --region "${AWS_REGION:-us-east-1}" \
+    --agent-runtime-id "${RUNTIME_ID}" \
+    --query 'roleArn' --output text 2>/dev/null || true)"
+  [[ "${AGENT_RUNTIME_ROLE_ARN}" == "None" ]] && AGENT_RUNTIME_ROLE_ARN=""
+fi
+
+CDK_CONTEXT=(-c "enableWaf=${ENABLE_WAF}")
+if [[ -n "${AGENT_RUNTIME_ARN}" ]]; then
+  CDK_CONTEXT+=(-c "agentRuntimeArn=${AGENT_RUNTIME_ARN}")
+fi
+if [[ -n "${AGENT_RUNTIME_ROLE_ARN}" ]]; then
+  CDK_CONTEXT+=(-c "agentRuntimeRoleArn=${AGENT_RUNTIME_ROLE_ARN}")
+fi
+
 npx cdk deploy "${STACK}" \
   --require-approval never \
-  -c enableWaf="${ENABLE_WAF}" \
+  "${CDK_CONTEXT[@]}" \
   --parameters AlertEmail="${ALERT_EMAIL}" \
   --parameters AllowedEmails="${ALLOWED_EMAILS}" \
   --outputs-file "${ROOT}/outputs.json"
@@ -61,4 +91,5 @@ echo "  App URL: ${CF_URL}"
 echo
 echo "Remaining manual steps (see DEPLOYMENT.md):"
 echo "  1. Store your Tavily API key in Secrets Manager (TavilySecretArn output)."
-echo "  2. Deploy the AgentCore agent, then redeploy with -c agentRuntimeArn=<arn>."
+echo "  2. Deploy the Python 3.12 AgentCore runtime with JOBS_TABLE and NARRATION_PROVIDER=nova-sonic,"
+echo "     then redeploy with its runtime and role ARNs."

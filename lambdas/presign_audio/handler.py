@@ -1,16 +1,15 @@
-"""Presign audio Lambda.
+"""Presign lecture audio Lambda.
 
-Generates short-lived (1 hour) presigned GET URLs for lecture MP3s. The critical
-security property: a user may only ever obtain a URL for audio under their *own*
-prefix. Audio keys are laid out as ``audio/{user_id}/{lecture_id}/lecture.mp3``,
-so we verify the requested key starts with ``audio/{user_id}/`` where ``user_id``
-comes from the verified Cognito JWT — never from the request body.
+Generates short-lived (1 hour) presigned GET URLs for existing Polly MP3 and Nova Sonic
+WAV objects. A caller may only obtain the canonical lecture object under their own
+Cognito-derived prefix: ``audio/{user_id}/{lecture_id}/lecture.(mp3|wav)``.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import uuid
 from typing import Any
 
 import boto3
@@ -66,16 +65,21 @@ def _user_id_from_event(event: dict[str, Any]) -> str:
 
 
 def _validate_key_owned_by(s3_key: str, user_id: str) -> str:
-    """Ensure ``s3_key`` is well-formed and belongs to ``user_id``."""
+    """Require the caller's canonical MP3 or WAV lecture-object key."""
     if not isinstance(s3_key, str) or not s3_key:
         raise ValidationError("missing s3_key")
-    # Reject path traversal and absolute/odd keys outright.
     if ".." in s3_key or s3_key.startswith("/") or "//" in s3_key:
         raise PermissionError("invalid key")
-    expected_prefix = f"audio/{user_id}/"
-    if not s3_key.startswith(expected_prefix):
+    parts = s3_key.split("/")
+    if len(parts) != 4 or parts[0] != "audio" or parts[1] != user_id:
         raise PermissionError("key does not belong to user")
-    if not s3_key.endswith(".mp3"):
+    try:
+        canonical_lecture_id = str(uuid.UUID(parts[2]))
+    except (ValueError, AttributeError) as exc:
+        raise PermissionError("invalid lecture id") from exc
+    if parts[2] != canonical_lecture_id:
+        raise PermissionError("invalid lecture id")
+    if parts[3] not in {"lecture.mp3", "lecture.wav"}:
         raise ValidationError("unsupported file type")
     return s3_key
 

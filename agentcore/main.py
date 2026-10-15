@@ -20,7 +20,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from agents.orchestrator import build_orchestrator
 from agents.series_planner import plan_series
-from agents import config, memory, run_context
+from agents import config, memory, progress, run_context
 from security.audit_logger import log_event
 from security.content_filter import check_topic_safety
 from security.input_validator import (
@@ -28,6 +28,7 @@ from security.input_validator import (
     validate_episode_count,
     validate_episode_duration,
     validate_episode_id,
+    validate_job_id,
     validate_message,
     validate_series_id,
     validate_user_id,
@@ -200,6 +201,7 @@ def _record_interaction(
 def agent_invocation(payload, context):
     """Handle a lecture-generation or series-plan invocation."""
     started = time.time()
+    progress.reset()
     request_id = getattr(context, "session_id", None) or payload.get("job_id")
     request_type = payload.get("request_type") or "lecture"
 
@@ -207,12 +209,19 @@ def agent_invocation(payload, context):
         if request_type not in {"lecture", "series_plan"}:
             raise ValidationError("Invalid request type")
         user_id = validate_user_id(payload.get("user_id", ""))
+        job_id = validate_job_id(payload.get("job_id", ""))
+        claim_token = payload.get("claim_token", "")
+        if claim_token:
+            claim_token = validate_job_id(claim_token)
         message = validate_message(payload.get("message", ""))
         personalization_context = _personalization_context(payload)
         series_context = _series_context(payload) if request_type == "lecture" else None
     except ValidationError as exc:
         log_event("agent_invoke", "invalid_input", error_code="ValidationError")
         return {"error": "invalid_input", "message": str(exc)}
+
+    progress.bind(user_id=user_id, job_id=job_id, claim_token=claim_token)
+    progress.report("validating", 15, "Validating your request")
 
     rate_action = "series_plan" if request_type == "series_plan" else "lecture"
     if not check_rate_limit(user_id, rate_action):
@@ -236,12 +245,14 @@ def agent_invocation(payload, context):
         user_id=user_id,
         request_id=request_id,
     )
+    progress.report("recalling", 20, "Recalling relevant learning context")
     memory_context = memory.retrieve_user_memories(user_id, message)
 
     try:
         if request_type == "series_plan":
             episode_count = payload.get("episode_count")
             duration_minutes = payload.get("duration_minutes")
+            progress.report("planning", 30, "Designing the lecture series")
             with _agent_lock:
                 plan = plan_series(
                     request=message,
@@ -259,6 +270,7 @@ def agent_invocation(payload, context):
                         + json.dumps(personalization_context, sort_keys=True)
                     ),
                 )
+            progress.report("planning", 90, "Series plan ready")
             response_text = "Your lecture-series plan is ready for review."
             lecture: dict[str, Any] = {}
         else:
@@ -299,6 +311,7 @@ def agent_invocation(payload, context):
         memory_text = f"Planned a {len(plan['episodes'])}-part lecture series: {plan['title']}"
     else:
         memory_text = response_text
+    progress.report("finalizing", 98, "Finalizing your result")
     _record_interaction(
         user_id=user_id,
         request_id=request_id,
