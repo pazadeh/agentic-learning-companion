@@ -7,8 +7,8 @@
  *
  * Bump the cache version when shipping changes so old caches are purged on activate.
  */
-const SHELL_CACHE = 'alc-shell-v2';
-const AUDIO_CACHE = 'alc-audio-v2';
+const SHELL_CACHE = 'alc-shell-v3';
+const AUDIO_CACHE = 'alc-audio-v3';
 const SHELL_ASSETS = ['/', '/index.html', '/manifest.json'];
 
 self.addEventListener('install', (event) => {

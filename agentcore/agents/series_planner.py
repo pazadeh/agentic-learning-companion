@@ -131,9 +131,10 @@ def plan_series(
         duration_minutes = validate_episode_duration(duration_minutes)
 
     model = BedrockModel(
-        model_id=config.ORCHESTRATOR_MODEL_ID,
+        model_id=config.PLANNER_MODEL_ID,
         region_name=config.AWS_REGION,
         max_tokens=min(config.MODEL_MAX_TOKENS, 4096),
+        additional_request_fields=config.model_request_fields(config.PLANNER_MODEL_ID),
     )
     planner = Agent(model=model, system_prompt=_SYSTEM_PROMPT)
 

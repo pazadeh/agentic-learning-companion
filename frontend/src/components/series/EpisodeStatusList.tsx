@@ -1,4 +1,4 @@
-import type { SeriesEpisode, SeriesEpisodeStatus } from '../../types';
+import type { GenerationStage, SeriesEpisode, SeriesEpisodeStatus } from '../../types';
 
 interface EpisodeStatusListProps {
   episodes: SeriesEpisode[];
@@ -19,6 +19,23 @@ const STATUS_LABELS: Record<SeriesEpisodeStatus, string> = {
   completed: 'Completed',
   failed: 'Failed',
 };
+
+const STAGE_LABELS: Partial<Record<GenerationStage, string>> = {
+  preparing: 'Preparing',
+  validating: 'Validating',
+  recalling: 'Personalizing',
+  profiling: 'Personalizing',
+  researching: 'Researching',
+  writing: 'Writing',
+  synthesizing: 'Creating audio',
+  uploading: 'Uploading audio',
+  saving: 'Saving',
+  finalizing: 'Finalizing',
+};
+
+function statusIsActive(status: SeriesEpisodeStatus): boolean {
+  return !['planned', 'completed', 'failed'].includes(status);
+}
 
 function boundedProgress(progress: number): number {
   if (!Number.isFinite(progress)) return 0;
@@ -57,10 +74,13 @@ export function EpisodeStatusList({
               <div className="episode-status__heading">
                 <strong>{episode.title}</strong>
                 <span className={`status-pill status-pill--${episode.status}`}>
-                  {STATUS_LABELS[episode.status]}
+                  {episode.stage ? STAGE_LABELS[episode.stage] ?? STATUS_LABELS[episode.status] : STATUS_LABELS[episode.status]}
                 </span>
               </div>
               {episode.summary && <p>{episode.summary}</p>}
+              {episode.stageDetail && statusIsActive(episode.status) && (
+                <p className="episode-status__stage-detail">{episode.stageDetail}</p>
+              )}
               <span className="episode-status__meta">{episode.durationMinutes} min</span>
 
               {episode.status !== 'planned' && episode.status !== 'completed' && (

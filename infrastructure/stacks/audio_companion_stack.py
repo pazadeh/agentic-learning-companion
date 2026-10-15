@@ -68,6 +68,7 @@ class AudioCompanionStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         agent_runtime_arn = self.node.try_get_context("agentRuntimeArn") or ""
+        agent_runtime_role_arn = self.node.try_get_context("agentRuntimeRoleArn") or ""
 
         # WAF is on by default; disable for solo/debug deploys with `-c enableWaf=false`
         # to avoid the ~$9/month standing cost. Re-enable before sharing the URL.
@@ -400,6 +401,39 @@ class AudioCompanionStack(Stack):
         lectures_table.grant_read_write_data(async_job_fn)
         # Series coordinator state (transactions use Put/Update/Delete on both tables).
         series_table.grant_read_write_data(async_job_fn)
+        # AgentCore writes truthful job progress, publishes generated audio, invokes
+        # Nova Sonic bidirectional streaming, and retains Polly as an explicit rollback.
+        if agent_runtime_role_arn:
+            iam.CfnPolicy(
+                self,
+                "AgentRuntimeApplicationPolicy",
+                policy_name="AudioCompanionAgentRuntimeAccess",
+                roles=[agent_runtime_role_arn.rsplit("/", 1)[-1]],
+                policy_document=iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            actions=["dynamodb:UpdateItem"],
+                            resources=[jobs_table.table_arn],
+                        ),
+                        iam.PolicyStatement(
+                            actions=["s3:PutObject"],
+                            resources=[audio_bucket.arn_for_objects("audio/*")],
+                        ),
+                        iam.PolicyStatement(
+                            # InvokeModelWithBidirectionalStream is authorized by the
+                            # standard bedrock:InvokeModel IAM action.
+                            actions=["bedrock:InvokeModel"],
+                            resources=[
+                                f"arn:aws:bedrock:{self.region}::foundation-model/amazon.nova-2-5-sonic"
+                            ],
+                        ),
+                        iam.PolicyStatement(
+                            actions=["polly:SynthesizeSpeech"],
+                            resources=["*"],
+                        ),
+                    ]
+                ),
+            )
         # CDK's DynamoDB read/write grant does not include TransactWriteItems.
         # Series creation and every state transition atomically update both tables.
         async_job_fn.add_to_role_policy(

@@ -21,6 +21,7 @@ Configuration (env vars):
                                    Override values instead of reading outputs.json.
     SMOKE_TIMEOUT                  Seconds to wait for the job (default: 300).
     SMOKE_PROMPT                   Lecture prompt (default: a short water-cycle ask).
+    SMOKE_EXPECT_AUDIO_SUFFIX      Require the generated key suffix (use .wav for Nova).
 
 Exit code is 0 only if every check passes.
 """
@@ -29,6 +30,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
 import os
 import struct
@@ -37,6 +39,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +158,38 @@ def _json(raw: bytes):
         return {"raw": raw[:200].decode("utf-8", "replace")}
 
 
+def probe_audio(url: str) -> tuple[int, str, bytes]:
+    """Download enough bytes to verify the presigned object is playable audio."""
+    request = urllib.request.Request(url, headers={"Range": "bytes=0-4095"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.headers.get_content_type(), response.read()
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return 0, "", b""
+
+
+def valid_audio_header(s3_key: str, content_type: str, payload: bytes) -> bool:
+    if s3_key.endswith(".wav"):
+        if content_type not in {"audio/wav", "audio/x-wav"}:
+            return False
+        try:
+            with wave.open(io.BytesIO(payload), "rb") as source:
+                return (
+                    source.getnchannels() == 1
+                    and source.getsampwidth() == 2
+                    and source.getframerate() == 24000
+                    and source.getnframes() > 0
+                )
+        except (wave.Error, EOFError):
+            return False
+    if s3_key.endswith(".mp3"):
+        return content_type in {"audio/mpeg", "audio/mp3"} and (
+            payload.startswith(b"ID3")
+            or (len(payload) >= 2 and payload[0] == 0xFF and payload[1] & 0xE0 == 0xE0)
+        )
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # Checks
 # --------------------------------------------------------------------------- #
@@ -190,6 +225,8 @@ def run(cfg: dict, token: str) -> int:
     status, body = http("POST", f"{api}/jobs/start", token=token, body={"message": prompt, "action": "lecture"})
     started = r.check("start job accepted", status == 202 and "job_id" in body, f"status={status}")
     job_id = body.get("job_id")
+    if job_id:
+        print(f"  job_id={job_id}")
 
     # 3. Poll to completion.
     result_body: dict = {}
@@ -197,27 +234,55 @@ def run(cfg: dict, token: str) -> int:
         timeout = int(os.environ.get("SMOKE_TIMEOUT", "300"))
         deadline = time.time() + timeout
         final_status = "pending"
+        status_body: dict = {}
         while time.time() < deadline:
-            s, sb = http("GET", f"{api}/jobs/{job_id}/status", token=token)
-            final_status = sb.get("status", "pending")
+            s, status_body = http("GET", f"{api}/jobs/{job_id}/status", token=token)
+            final_status = status_body.get("status", "pending")
             if final_status in ("completed", "failed"):
                 break
             time.sleep(3)
-        r.check("job completed", final_status == "completed", f"final_status={final_status}")
+        failure_detail = status_body.get("error") or status_body.get("stage_detail") or ""
+        r.check(
+            "job completed",
+            final_status == "completed",
+            f"final_status={final_status} stage={status_body.get('stage', '')} detail={failure_detail}",
+        )
 
-        if final_status == "completed":
+        if final_status in {"completed", "failed"}:
             s, result_body = http("GET", f"{api}/jobs/{job_id}/result", token=token)
+        if final_status == "completed":
             resp_text = (result_body.get("result") or {}).get("response", "")
             r.check("result has a response", bool(resp_text), f"len={len(resp_text)}")
 
-    # 4. Fresh presigned audio URL (only if a lecture was produced).
+    # 4. Fresh presigned audio URL and playable object validation.
     lecture = (result_body.get("result") or {}).get("lecture") or {}
     s3_key = lecture.get("s3Key")
     if s3_key:
-        status, body = http("POST", f"{api}/audio/refresh", token=token, body={"s3_key": s3_key})
-        r.check("audio presign for own key", status == 200 and "url" in body, f"status={status}")
+        expected_suffix = os.environ.get("SMOKE_EXPECT_AUDIO_SUFFIX", "").strip()
+        if expected_suffix:
+            r.check(
+                "audio uses expected provider format",
+                s3_key.endswith(expected_suffix),
+                f"key={s3_key}",
+            )
+        status, body = http(
+            "POST", f"{api}/audio/refresh", token=token, body={"s3_key": s3_key}
+        )
+        presigned = r.check(
+            "audio presign for own key",
+            status == 200 and "url" in body,
+            f"status={status}",
+        )
+        if presigned:
+            audio_status, content_type, payload = probe_audio(body["url"])
+            r.check(
+                "presigned audio is playable",
+                audio_status in {200, 206}
+                and valid_audio_header(s3_key, content_type, payload),
+                f"status={audio_status} type={content_type} bytes={len(payload)}",
+            )
     else:
-        print("  [SKIP] audio presign — no lecture metadata returned")
+        r.check("result includes lecture audio", False)
 
     # 5. Cross-user audio access must be forbidden.
     foreign_key = f"audio/{uuid.uuid4()}/{uuid.uuid4()}/lecture.mp3"

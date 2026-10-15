@@ -566,7 +566,59 @@ def test_opted_out_activity_stays_excluded_after_reenable(series_env):
     assert "preferredPlaybackRate" not in inferred
 
 
-def test_planner_redelivery_is_recoverable_and_fenced(series_env):
+def test_episode_staleness_uses_active_job_heartbeat(series_env, monkeypatch):
+    handler, _ = series_env
+    jobs = boto3.resource("dynamodb", region_name="us-east-1").Table(
+        os.environ["JOBS_TABLE"]
+    )
+    job_id = str(uuid.uuid4())
+    jobs.put_item(
+        Item={
+            "jobId": job_id,
+            "status": "processing",
+            "progressUpdatedAt": 99_999,
+        }
+    )
+    episode = {
+        "episodeId": str(uuid.uuid4()),
+        "status": "processing",
+        "startedAt": 1,
+        "activeJobId": job_id,
+    }
+    monkeypatch.setattr(handler.series, "_epoch", lambda: 100_000)
+
+    assert handler.series._public_episode(episode)["retryable"] is False
+    jobs.update_item(
+        Key={"jobId": job_id},
+        UpdateExpression="SET progressUpdatedAt = :old",
+        ExpressionAttributeValues={":old": 1},
+    )
+    assert handler.series._public_episode(episode)["retryable"] is True
+
+
+def test_flat_job_redelivery_does_not_replace_active_claim(series_env):
+    handler, _ = series_env
+    jobs = boto3.resource("dynamodb", region_name="us-east-1").Table(
+        os.environ["JOBS_TABLE"]
+    )
+    job = {
+        "jobId": str(uuid.uuid4()),
+        "userId": USER_ID,
+        "status": "pending",
+        "message": "Teach me safely",
+    }
+    jobs.put_item(Item=job)
+
+    first_claim = handler._claim_flat_job(job)
+    second_claim = handler._claim_flat_job(job)
+
+    assert first_claim
+    assert second_claim is None
+    stored = jobs.get_item(Key={"jobId": job["jobId"]})["Item"]
+    assert stored["claimToken"] == first_claim
+
+
+def test_planner_redelivery_does_not_replace_active_claim(series_env):
     handler, _ = series_env
     resource = boto3.resource("dynamodb", region_name="us-east-1")
     jobs = resource.Table(os.environ["JOBS_TABLE"])
@@ -577,7 +629,7 @@ def test_planner_redelivery_is_recoverable_and_fenced(series_env):
         "jobId": job_id,
         "userId": USER_ID,
         "seriesId": series_id,
-        "status": "processing",
+        "status": "pending",
         "message": "Plan a series",
         "jobType": "SERIES_PLAN",
     }
@@ -595,15 +647,11 @@ def test_planner_redelivery_is_recoverable_and_fenced(series_env):
 
     first_claim = handler.series._claim_job(job)
     second_claim = handler.series._claim_job(job)
-    assert first_claim and second_claim and first_claim != second_claim
+    assert first_claim
+    assert second_claim is None
     stored_job = jobs.get_item(Key={"jobId": job_id})["Item"]
-    assert stored_job["claimToken"] == second_claim
-
-    # A displaced worker cannot fail the job or series after a newer delivery claims it.
-    handler.series._fail_plan(job, "old_worker_failed", claim_token=first_claim)
-    assert jobs.get_item(Key={"jobId": job_id})["Item"]["status"] == "processing"
+    assert stored_job["claimToken"] == first_claim
     summary = series_table.get_item(
         Key={"pk": f"USER#{USER_ID}", "sk": f"SERIES#{series_id}"}
     )["Item"]
-    assert summary["status"] == "planning"
-    assert summary["planClaimToken"] == second_claim
+    assert summary["planClaimToken"] == first_claim

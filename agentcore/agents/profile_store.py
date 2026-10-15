@@ -12,7 +12,7 @@ import time
 
 from strands import tool
 
-from . import config, run_context
+from . import config, progress, run_context
 
 logger = logging.getLogger("audio_companion.agents.store")
 
@@ -35,6 +35,7 @@ def get_user_profile(user_id: str) -> str:
     Returns:
         A JSON string of the profile, or an empty default profile if none exists.
     """
+    progress.report("profiling", 25, "Applying your learning preferences")
     item = (
         _profiles_table()
         .get_item(Key={"pk": f"USER#{user_id}", "sk": "PROFILE#EXPLICIT"})
@@ -116,6 +117,7 @@ def save_lecture(user_id: str, lecture_json: str) -> str:
     Returns:
         A JSON status string echoing the stored lectureId.
     """
+    progress.report("saving", 94, "Saving lecture to your library")
     try:
         lecture = json.loads(lecture_json) if lecture_json else {}
     except json.JSONDecodeError:
@@ -142,6 +144,8 @@ def save_lecture(user_id: str, lecture_json: str) -> str:
         "topic": lecture.get("topic", ""),
         "s3Key": s3_key,
         "durationMinutes": duration_minutes,
+        "audioProvider": produced.get("audioProvider", ""),
+        "audioFormat": produced.get("audioFormat", ""),
         "knowledgeLevel": lecture.get("knowledgeLevel", ""),
         "sources": lecture.get("sources", []),
         "personalizationUsed": produced.get("personalizationUsed", {}),
@@ -150,6 +154,7 @@ def save_lecture(user_id: str, lecture_json: str) -> str:
     if lecture.get("script"):
         item["script"] = lecture["script"]
     _lectures_table().put_item(Item=item)
+    progress.report("saving", 95, "Lecture saved to your library")
     run_context.set_lecture(
         lectureId=lecture_id,
         title=item["title"],

@@ -251,6 +251,39 @@ button { font: inherit; cursor: pointer; }
 .message--assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .message--pending { color: var(--muted); font-style: italic; }
 
+.generation-progress {
+  align-self: stretch;
+  width: min(100%, 560px);
+  padding: 16px;
+  background: linear-gradient(145deg, #f8faff, #ffffff);
+  border: 1px solid #dbe4ff;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(67, 56, 202, 0.08);
+}
+.generation-progress__heading { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+.generation-progress__heading div { display: grid; gap: 2px; min-width: 0; }
+.generation-progress__heading strong { color: var(--text); font-size: 0.95rem; }
+.generation-progress__heading span:not(.generation-progress__pulse) { color: var(--muted); font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.generation-progress__heading b { color: var(--indigo); font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.generation-progress__pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--indigo); box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.4); animation: progressPulse 1.8s infinite; }
+.generation-progress__bar { height: 6px; margin: 14px 0 16px; overflow: hidden; background: #e8ecf7; border-radius: 999px; }
+.generation-progress__bar > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--indigo), #818cf8); transition: width 0.45s ease; }
+.generation-progress__steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 0; padding: 0; list-style: none; }
+.generation-progress__steps li { position: relative; display: grid; justify-items: center; gap: 5px; color: #9ca3af; text-align: center; }
+.generation-progress__steps li::before { content: ''; position: absolute; top: 10px; right: 50%; left: -50%; height: 2px; background: #e5e7eb; z-index: 0; }
+.generation-progress__steps li:first-child::before { display: none; }
+.generation-progress__steps li > span { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #eef0f5; font-size: 0.7rem; font-weight: 700; }
+.generation-progress__steps li small { font-size: 0.68rem; line-height: 1.15; }
+.generation-progress__steps li.is-complete, .generation-progress__steps li.is-active { color: var(--indigo); }
+.generation-progress__steps li.is-complete::before, .generation-progress__steps li.is-active::before { background: #a5b4fc; }
+.generation-progress__steps li.is-complete > span { color: #fff; background: var(--indigo); }
+.generation-progress__steps li.is-active > span { color: var(--indigo); background: #e0e7ff; box-shadow: 0 0 0 3px #eef2ff; }
+@keyframes progressPulse { 70% { box-shadow: 0 0 0 8px rgba(79, 70, 229, 0); } 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); } }
+@media (prefers-reduced-motion: reduce) {
+  .generation-progress__pulse { animation: none; }
+  .generation-progress__bar > span { transition: none; }
+}
+
 .composer { display: flex; gap: 8px; padding-top: 10px; }
 .composer__input {
   flex: 1;

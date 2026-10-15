@@ -3,8 +3,10 @@
 AWS clients are replaced with in-memory fakes via monkeypatch so the routing,
 validation, authorization, and lifecycle logic are exercised without AWS.
 """
+import io
 import json
 import uuid
+from decimal import Decimal
 
 import pytest
 
@@ -33,7 +35,14 @@ class _FakeJobsTable:
         item = self.items.get(Key["jobId"])
         return {"Item": dict(item)} if item else {}
 
-    def update_item(self, Key, UpdateExpression, ExpressionAttributeNames, ExpressionAttributeValues):
+    def update_item(
+        self,
+        Key,
+        UpdateExpression,
+        ExpressionAttributeNames,
+        ExpressionAttributeValues,
+        **_kwargs,
+    ):
         item = self.items.setdefault(Key["jobId"], {"jobId": Key["jobId"]})
         for placeholder, name in ExpressionAttributeNames.items():
             value_key = ":" + placeholder.lstrip("#")
@@ -156,11 +165,56 @@ def test_unknown_route_404(async_setup):
     assert resp["statusCode"] == 404
 
 
+def test_invoke_agent_serializes_decimal_profile_values(async_job_handler, monkeypatch):
+    h = async_job_handler
+    captured = {}
+
+    class AgentCore:
+        def invoke_agent_runtime(self, **kwargs):
+            captured.update(kwargs)
+            return {"response": io.BytesIO(b'{"response":"ok"}')}
+
+    monkeypatch.setattr(h, "_agentcore", lambda: AgentCore())
+    monkeypatch.setattr(h, "_report_lambda_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        h.learner_profile,
+        "resolve_personalization",
+        lambda *_: {
+            "learningStyle": {
+                "value": "examples",
+                "source": "default",
+                "confidencePercent": 0,
+            },
+            "knowledgeLevel": {
+                "value": "beginner",
+                "source": "explicit",
+                "confidencePercent": 100,
+            },
+            "durationMinutes": {
+                "value": Decimal("15"),
+                "source": "explicit",
+                "confidencePercent": 100,
+            },
+            "researchDepth": {
+                "value": "standard",
+                "source": "default",
+                "confidencePercent": 0,
+            },
+        },
+    )
+
+    result = h._invoke_agent(USER_ID, "Teach me DNS", str(uuid.uuid4()))
+
+    payload = json.loads(captured["payload"])
+    assert payload["personalization_context"]["durationMinutes"]["value"] == 15
+    assert result == {"response": "ok"}
+
+
 def test_worker_invokes_agent_and_completes(async_setup, monkeypatch):
     h, table, _ = async_setup
     job_id = str(uuid.uuid4())
     table.items[job_id] = {"jobId": job_id, "userId": USER_ID, "status": "pending", "message": "Teach me X"}
-    monkeypatch.setattr(h, "_invoke_agent", lambda uid, msg, jid: {"response": "done"})
+    monkeypatch.setattr(h, "_invoke_agent", lambda uid, msg, jid, **kwargs: {"response": "done"})
     result = h.handler({"_worker": True, "job_id": job_id}, None)
     assert result["ok"] is True
     assert table.items[job_id]["status"] == "completed"
@@ -172,13 +226,61 @@ def test_worker_marks_failed_on_error(async_setup, monkeypatch):
     job_id = str(uuid.uuid4())
     table.items[job_id] = {"jobId": job_id, "userId": USER_ID, "status": "pending", "message": "Teach me X"}
 
-    def boom(uid, msg, jid):
+    def boom(uid, msg, jid, **kwargs):
         raise RuntimeError("bedrock down")
 
     monkeypatch.setattr(h, "_invoke_agent", boom)
     result = h.handler({"_worker": True, "job_id": job_id}, None)
     assert result["ok"] is False
     assert table.items[job_id]["status"] == "failed"
+
+
+def test_persist_lecture_result_accepts_canonical_nova_wav(async_job_handler, monkeypatch):
+    h = async_job_handler
+    lecture_id = str(uuid.uuid4())
+    updates = []
+
+    class Table:
+        def update_item(self, **kwargs):
+            updates.append(kwargs)
+
+    monkeypatch.setattr(h, "_lectures_table", lambda: Table())
+    h._persist_lecture_result(
+        USER_ID,
+        {
+            "lecture": {
+                "lectureId": lecture_id,
+                "title": "Nova lecture",
+                "topic": "Testing",
+                "s3Key": f"audio/{USER_ID}/{lecture_id}/lecture.wav",
+                "durationMinutes": 1,
+                "audioProvider": "nova-sonic",
+                "audioFormat": "wav",
+            }
+        },
+    )
+    values = updates[0]["ExpressionAttributeValues"]
+    assert values[":s3_key"].endswith("lecture.wav")
+    assert values[":audio_provider"] == "nova-sonic"
+    assert values[":audio_format"] == "wav"
+
+
+def test_persist_lecture_result_rejects_noncanonical_audio_key(
+    async_job_handler, monkeypatch
+):
+    h = async_job_handler
+    lecture_id = str(uuid.uuid4())
+    monkeypatch.setattr(h, "_lectures_table", lambda: None)
+    with pytest.raises(RuntimeError, match="invalid audio key"):
+        h._persist_lecture_result(
+            USER_ID,
+            {
+                "lecture": {
+                    "lectureId": lecture_id,
+                    "s3Key": f"audio/{USER_ID}/{lecture_id}/other.wav",
+                }
+            },
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +307,15 @@ def test_presign_returns_url_for_own_key(presign_setup):
     body = json.loads(resp["body"])
     assert key in body["url"]
     assert body["expires_in"] == 3600
+
+
+def test_presign_returns_url_for_own_nova_wav(presign_setup):
+    h = presign_setup
+    key = f"audio/{USER_ID}/{uuid.uuid4()}/lecture.wav"
+    event = _api_event("POST", "/audio/refresh", body={"s3_key": key})
+    resp = h.handler(event, None)
+    assert resp["statusCode"] == 200
+    assert key in json.loads(resp["body"])["url"]
 
 
 def test_presign_forbidden_for_other_users_key(presign_setup):
