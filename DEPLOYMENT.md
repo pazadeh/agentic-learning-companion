@@ -4,6 +4,10 @@ This deploys the Audio Learning Companion to **your own** AWS account. Nothing i
 deployed for you — you run the steps below with your credentials.
 
 > Region is **us-east-1** throughout (WAF for CloudFront must live there).
+>
+> **Production branch policy:** deploy only from the repository's `main` branch.
+> `scripts/deploy.sh` enforces this and refuses `development`, feature branches, and
+> detached HEADs. Validate on `development`, merge to `main`, then deploy.
 
 ## 0. Prerequisites on your machine
 

@@ -80,9 +80,13 @@ npm run typecheck && npm test && npm run build
 See [DEPLOYMENT.md](./DEPLOYMENT.md). Short version (after prerequisites):
 
 ```bash
+git checkout main
 export ALLOWED_EMAILS="you@example.com"
 ./scripts/deploy.sh
 ```
+
+Production deployment is intentionally restricted to `main`; develop and validate on
+`development`, then merge before deploying.
 
 > Deployment requires your own AWS account, Bedrock access to the configured Claude
 > models (evaluated defaults: Sonnet/Haiku 5.5; Sonnet 4.6 is the live-account fallback),

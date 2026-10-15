@@ -50,6 +50,10 @@ are not emitted as user-content logs.
 
 ## Redeploy after a code change
 
+Production is always deployed from `main`. Complete validation on `development`, merge
+and push `main`, then check out `main` before invoking deployment commands;
+`scripts/deploy.sh` rejects any other branch.
+
 For contract changes shared by AgentCore and Lambda (new request fields, tools, or
 response shapes), deploy in this order:
 

@@ -12,6 +12,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STACK="AudioCompanionStack"
 
+CURRENT_BRANCH="$(git -C "${ROOT}" branch --show-current)"
+if [[ "${CURRENT_BRANCH}" != "main" ]]; then
+  echo "Refusing production deployment from branch '${CURRENT_BRANCH:-detached HEAD}'." >&2
+  echo "Merge the validated changes into main and deploy from main." >&2
+  exit 1
+fi
+
 : "${ALLOWED_EMAILS:?Set ALLOWED_EMAILS to a comma-separated allowlist, e.g. you@example.com}"
 : "${ALERT_EMAIL:?Set ALERT_EMAIL to receive budget/alarm notifications}"
 
