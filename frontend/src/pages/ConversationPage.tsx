@@ -16,7 +16,6 @@ import {
   isSpeechRecognitionSupported,
   type VoiceController,
 } from '../services/voice-recognition';
-import { getItem, setItem, STORAGE_KEYS } from '../utils/storage';
 import { hasSeriesPotential, isExplicitSeriesRequest } from '../utils/seriesSuggestion';
 import { usePlaybackTracking } from '../hooks/usePlaybackTracking';
 import type { ChatMessage, Job, Lecture, LectureResult } from '../types';
@@ -62,7 +61,6 @@ export function ConversationPage() {
   }, [state.messages, jobState?.progress]);
 
   const persistLecture = useCallback((lecture: LectureResult) => {
-    const stored = getItem<Lecture[]>(STORAGE_KEYS.lectures, []);
     const entry: Lecture = {
       lectureId: lecture.lectureId,
       title: lecture.title,
@@ -70,11 +68,11 @@ export function ConversationPage() {
       s3Key: lecture.s3Key,
       durationMinutes: lecture.durationMinutes,
       createdAt: lecture.createdAt ?? new Date().toISOString(),
+      audioProvider: lecture.audioProvider,
+      audioFormat: lecture.audioFormat,
       completionPercent: 0,
       isFavorite: false,
     };
-    const next = [entry, ...stored.filter((l) => l.lectureId !== entry.lectureId)];
-    setItem(STORAGE_KEYS.lectures, next);
     return entry;
   }, []);
 
@@ -286,8 +284,12 @@ export function ConversationPage() {
           />
         )}
 
+        {!state.isOnline && (
+          <p className="offline-note">Generation is unavailable offline. Open History to play saved lectures.</p>
+        )}
+
         <form className="composer-wrap" onSubmit={onSubmit}>
-          <fieldset className="mode-choice" disabled={busy}>
+          <fieldset className="mode-choice" disabled={busy || !state.isOnline}>
             <legend>What would you like to create?</legend>
             <label className={mode === 'lecture' ? 'is-active' : ''}>
               <input
@@ -317,7 +319,7 @@ export function ConversationPage() {
               placeholder={mode === 'series' ? 'What series would you like to learn?' : 'What would you like to learn?'}
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              disabled={busy}
+              disabled={busy || !state.isOnline}
               aria-label="Message"
             />
             {voiceSupported && (
@@ -326,12 +328,12 @@ export function ConversationPage() {
                 className={`composer__voice ${listening ? 'is-listening' : ''}`}
                 onClick={toggleVoice}
                 aria-label={listening ? 'Stop voice input' : 'Start voice input'}
-                disabled={busy}
+                disabled={busy || !state.isOnline}
               >
                 {listening ? '●' : '🎤'}
               </button>
             )}
-            <button className="composer__send btn btn--primary" type="submit" disabled={busy || !input.trim()}>
+            <button className="composer__send btn btn--primary" type="submit" disabled={busy || !state.isOnline || !input.trim()}>
               {mode === 'series' ? 'Create draft' : 'Send'}
             </button>
           </div>
@@ -346,6 +348,12 @@ export function ConversationPage() {
             title={state.currentLecture?.title}
             onPlaybackUpdate={trackPlayback}
           />
+          {state.currentLecture?.script && (
+            <details className="lecture-transcript">
+              <summary>Read transcript</summary>
+              <div className="lecture-transcript__text">{state.currentLecture.script}</div>
+            </details>
+          )}
         </section>
       )}
     </div>

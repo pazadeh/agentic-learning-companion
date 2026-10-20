@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
 
 from strands import tool
 
@@ -151,9 +152,15 @@ def save_lecture(user_id: str, lecture_json: str) -> str:
         "personalizationUsed": produced.get("personalizationUsed", {}),
         "createdAt": created_at,
     }
-    if lecture.get("script"):
-        item["script"] = lecture["script"]
+    generated_script = run_context.get_script().strip()
+    transcript = generated_script or (
+        str(lecture.get("script", "")).strip() if lecture.get("script") else ""
+    )
+    if transcript:
+        item["transcriptAvailable"] = True
     _lectures_table().put_item(Item=item)
+    if transcript:
+        _put_transcript(user_id, str(lecture_id), transcript)
     progress.report("saving", 95, "Lecture saved to your library")
     run_context.set_lecture(
         lectureId=lecture_id,
@@ -161,9 +168,34 @@ def save_lecture(user_id: str, lecture_json: str) -> str:
         topic=item["topic"],
         s3Key=item["s3Key"],
         durationMinutes=item["durationMinutes"],
+        transcriptAvailable=bool(transcript),
         createdAt=created_at,
     )
     return json.dumps({"ok": True, "lectureId": lecture_id})
+
+
+def _put_transcript(user_id: str, lecture_id: str, script: str) -> None:
+    """Store text outside GSI1; omitting createdAt keeps this row out of the index."""
+    _lectures_table().put_item(
+        Item={
+            "pk": f"USER#{user_id}",
+            "sk": f"TRANSCRIPT#{lecture_id}",
+            "entityType": "TRANSCRIPT",
+            "lectureId": lecture_id,
+            "script": script[: config.MAX_SCRIPT_CHARS],
+        }
+    )
+
+
+def persist_generated_transcript(user_id: str, lecture: dict[str, Any]) -> None:
+    """Deterministically persist the invocation script without returning it publicly."""
+    lecture_id = lecture.get("lectureId")
+    script = run_context.get_script().strip()
+    if not isinstance(lecture_id, str) or not lecture_id or not script:
+        return
+    _put_transcript(user_id, lecture_id, script)
+    lecture["transcriptAvailable"] = True
+    run_context.set_lecture(transcriptAvailable=True)
 
 
 def _iso_now() -> str:

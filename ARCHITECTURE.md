@@ -33,7 +33,7 @@ flowchart TB
     subgraph edge["Edge & Identity"]
         direction TB
         cf["CloudFront<br/>+ AWS WAF"]
-        cognito["Amazon Cognito<br/><i>user pool · MFA · email allowlist</i>"]
+        cognito["Amazon Cognito<br/><i>user pool · email/password · allowlist</i>"]
         presignup["Cognito pre-signup Lambda<br/><i>email allowlist gate</i>"]
     end
 
@@ -68,7 +68,7 @@ flowchart TB
     user -->|"HTTPS · static app"| cf
     cf -->|"private S3 origin"| s3static
     user -->|"HTTPS · Cognito ID token"| apigw
-    user -.->|"sign in / MFA"| cognito
+    user -.->|"email/password sign in"| cognito
     cognito -.->|"PreSignUp trigger"| presignup
     apigw -->|"verified JWT claims"| asyncjob
     apigw -->|"verified JWT claims"| presign
@@ -391,7 +391,27 @@ episode by episode.
 
 ---
 
-## 5. Adaptive learner profile
+## 5. Offline lecture library
+
+Users explicitly choose **Save offline** for an owned lecture. The browser fetches the
+owned detail record and a fresh presigned audio object while online, checks available
+storage, then atomically stores metadata, transcript, and the audio Blob in IndexedDB
+under `[Cognito sub, lectureId]`. Presigned URLs and bearer tokens are never stored.
+
+Playback resolves IndexedDB first and uses a `blob:` URL, so saved lectures remain
+readable and playable without API or S3 access. Removing a download deletes only the
+local copy; the cloud lecture remains in History. Legacy lectures without persisted
+scripts are supported as audio-only downloads. Nova WAV files are large (~2.9 MB per
+minute), so saves are explicit, quota-checked, and individually removable.
+
+The service worker installs the current hashed JS/CSS shell for cold offline launch and
+does not cache cross-origin API or signed S3 requests. Offline access on a fresh launch
+still requires an unexpired cached Cognito session; accepting expired identity tokens or
+adding a separate device PIN is intentionally outside this feature.
+
+---
+
+## 6. Adaptive learner profile
 
 The learner model separates declared settings from behavioral evidence. Explicit
 settings are stored at `ProfilesTable: USER#{userId} / PROFILE#EXPLICIT`; temporary

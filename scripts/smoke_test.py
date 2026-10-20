@@ -8,12 +8,11 @@ cannot request audio belonging to a different user.
 
 Configuration (env vars):
   Required (one auth method):
-    SMOKE_ID_TOKEN                 A valid Cognito ID token (simplest; MFA-agnostic).
+    SMOKE_ID_TOKEN                 A valid Cognito ID token (simplest option).
                                    Grab it from the app after signing in (devtools ->
                                    Application -> Local Storage -> ...idToken).
     -- OR --
     SMOKE_EMAIL, SMOKE_PASSWORD    Cognito credentials (uses SRP via pycognito).
-    SMOKE_TOTP_SECRET              (optional) Base32 TOTP secret to auto-answer MFA.
 
   Optional:
     OUTPUTS_FILE                   Path to CDK outputs.json (default: ../outputs.json).
@@ -27,13 +26,9 @@ Exit code is 0 only if every check passes.
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import io
 import json
 import os
-import struct
 import sys
 import time
 import urllib.error
@@ -73,20 +68,6 @@ def fail_hard(message: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# TOTP (RFC 6238) — for auto-answering software-token MFA
-# --------------------------------------------------------------------------- #
-def totp_now(secret_base32: str, period: int = 30, digits: int = 6, for_time: float | None = None) -> str:
-    key = base64.b32decode(secret_base32.strip().replace(" ", "").upper())
-    now = time.time() if for_time is None else for_time
-    counter = int(now) // period
-    msg = struct.pack(">Q", counter)
-    digest = hmac.new(key, msg, hashlib.sha1).digest()
-    offset = digest[-1] & 0x0F
-    code_int = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
-    return str(code_int).zfill(digits)
-
-
-# --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
 def get_id_token(cfg: dict) -> str:
@@ -105,7 +86,6 @@ def get_id_token(cfg: dict) -> str:
 
     try:
         from pycognito import Cognito
-        from pycognito.exceptions import SoftwareTokenMFAChallengeException
     except ImportError:
         fail_hard("pycognito not installed. Run: pip install -r scripts/requirements-smoke.txt")
 
@@ -116,15 +96,7 @@ def get_id_token(cfg: dict) -> str:
         username=email,
         user_pool_region=cfg["region"],
     )
-    try:
-        user.authenticate(password=password)
-    except SoftwareTokenMFAChallengeException:
-        secret = os.environ.get("SMOKE_TOTP_SECRET", "").strip()
-        if not secret:
-            fail_hard("MFA required but SMOKE_TOTP_SECRET not set.")
-        code = totp_now(secret)
-        print("auth: answering software-token MFA challenge")
-        user.respond_to_software_token_mfa_challenge(code)
+    user.authenticate(password=password)
 
     if not getattr(user, "id_token", None):
         fail_hard("Authentication did not yield an ID token.")

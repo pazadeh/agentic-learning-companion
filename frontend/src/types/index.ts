@@ -33,6 +33,15 @@ export interface Lecture {
   resumePositionSeconds?: number;
   lastListenedAt?: string;
   personalizationUsed?: PersonalizationUsed;
+  audioProvider?: string;
+  audioFormat?: 'wav' | 'mp3' | string;
+  transcriptAvailable?: boolean;
+  script?: string | null;
+  seriesId?: string;
+  episodeId?: string;
+  episodeOrder?: number;
+  offlineAvailable?: boolean;
+  offlineBytes?: number;
   isFavorite?: boolean;
 }
 
@@ -56,6 +65,8 @@ export interface LectureResult {
   durationMinutes: number;
   createdAt?: string;
   personalizationUsed?: PersonalizationUsed;
+  audioProvider?: string;
+  audioFormat?: 'wav' | 'mp3' | string;
 }
 
 export type GenerationStage =

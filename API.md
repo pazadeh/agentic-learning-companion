@@ -120,6 +120,25 @@ Lists up to 200 saved lectures newest-first for the signed-in user.
 ```
 
 S3 URLs are deliberately not stored. Call `/audio/refresh` when playback begins.
+The list exposes `transcriptAvailable` but never includes transcript text.
+
+### `GET /lectures/{lectureId}`
+
+Returns one lecture owned by the signed-in user, including `script` for explicit offline
+saving. Missing and other-user records both return `404`; malformed IDs return `400`.
+Legacy lectures return `script: null` and `transcriptAvailable: false` so their audio can
+still be saved without fabricating text.
+
+```json
+{
+  "lectureId": "uuid",
+  "title": "...",
+  "s3Key": "audio/{userId}/{lectureId}/lecture.wav",
+  "audioFormat": "wav",
+  "script": "Full generated spoken transcript...",
+  "transcriptAvailable": true
+}
+```
 
 ### `POST /lectures/{lectureId}/playback`
 

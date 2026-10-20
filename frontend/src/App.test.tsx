@@ -35,6 +35,8 @@ vi.mock('./services/api-client', () => ({
   resetProfileInferences: vi.fn(),
   pollJobUntilDone: vi.fn(),
   createSeriesDraft: vi.fn(),
+  listLectures: vi.fn(async () => ({ lectures: [] })),
+  getLecture: vi.fn(),
   listSeries: vi.fn(async () => ({ series: [] })),
   getSeries: vi.fn(),
   saveSeriesPlan: vi.fn(),
@@ -100,7 +102,7 @@ describe('authenticated', () => {
     await renderAuthed();
     fireEvent.click(screen.getByRole('button', { name: 'History' }));
     expect(
-      screen.getByText('No lectures yet. Head to Chat and ask to learn something.')
+      await screen.findByText('No lectures yet. Head to Chat and ask to learn something.')
     ).toBeInTheDocument();
   });
 

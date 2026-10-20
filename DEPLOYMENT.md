@@ -101,7 +101,9 @@ stack outputs, uploads the build to S3, and invalidates CloudFront. AgentCore is
 separate deployment in step 7. At the end the script prints your **App URL**. On
 later redeploys it reads and preserves the current `AGENT_RUNTIME_ARN` from the Lambda
 and discovers its execution role so CDK can retain the progress-update policy; set the
-corresponding environment variables explicitly only when switching runtimes.
+corresponding environment variables explicitly only when switching runtimes. The audio
+bucket remains private but allows GET/HEAD CORS from the deployed CloudFront origin so
+an authenticated browser can store a presigned audio Blob explicitly for offline use.
 
 ## 6. Store the Tavily key in Secrets Manager
 
@@ -218,14 +220,14 @@ deactivate && cd ..
 
 1. Open the App URL.
 2. **Create account** with an allowlisted email → confirm via the emailed code.
-3. Sign in → you'll be prompted to set up **TOTP MFA** (scan the secret into an
-   authenticator app) → enter the 6-digit code.
+3. Sign in with your email and password. The browser silently refreshes the session for
+   up to 30 days unless you sign out or clear site data.
 4. You're in.
 
 ## 9. Manual test checklist
 
-- [ ] A non-allowlisted email cannot sign up (rejected at confirmation).
-- [ ] MFA is required on sign-in.
+- [ ] A non-allowlisted email is rejected during sign-up before a confirmation code is sent.
+- [ ] Email/password sign-in succeeds without a second factor and survives reload through silent refresh.
 - [ ] Ask "Teach me about black holes" → truthful stages advance through
       Personalize → Research → Write → Create audio → Save → audio plays.
 - [ ] Research details show completed search angles/source counts; audio details show
@@ -276,7 +278,7 @@ and series flows currently remain in the manual checklist above.
 
 Authenticate one of two ways:
 
-**Easiest — paste an ID token** (works regardless of MFA): sign into the app, copy
+**Easiest — paste an ID token**: sign into the app, copy
 the ID token (browser devtools → Application → Local Storage → the
 `...idToken` value), then:
 
@@ -287,14 +289,12 @@ SMOKE_TIMEOUT=900 \
 python3 scripts/smoke_test.py
 ```
 
-**Or — email/password** (uses Cognito SRP + auto-answers TOTP if you provide the
-secret):
+**Or — email/password** (uses Cognito SRP):
 
 ```bash
 pip install -r scripts/requirements-smoke.txt
 SMOKE_EMAIL="you@example.com" \
 SMOKE_PASSWORD="..." \
-SMOKE_TOTP_SECRET="<base32 TOTP secret>" \
 python3 scripts/smoke_test.py
 ```
 

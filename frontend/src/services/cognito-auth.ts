@@ -1,9 +1,7 @@
 /** Cognito authentication wrapper around amazon-cognito-identity-js.
  *
- * Exposes a Promise-based API for the multi-step flows the UI needs: sign-up,
- * email confirmation, sign-in (with TOTP MFA), TOTP enrollment, password reset,
- * and session/token access. Error messages are deliberately generic so we never
- * reveal whether an email is registered.
+ * Exposes Promise-based email/password sign-up, confirmation, session refresh, and
+ * password-reset flows. Error messages deliberately avoid account enumeration.
  */
 import {
   AuthenticationDetails,
@@ -34,10 +32,6 @@ function newUser(email: string): CognitoUser {
   return new CognitoUser({ Username: email, Pool: pool() });
 }
 
-// Holds the user mid-flow (between authenticateUser and the MFA code submission,
-// or during TOTP enrollment).
-let pendingUser: CognitoUser | null = null;
-
 const GENERIC_AUTH_ERROR = 'Invalid email or password';
 
 function friendlyError(err: unknown): Error {
@@ -62,14 +56,6 @@ function friendlyError(err: unknown): Error {
   }
 }
 
-export interface SignInResult {
-  mfaRequired: boolean;
-  /** True when the user has no MFA yet and must enroll a TOTP device now. */
-  mfaSetupRequired?: boolean;
-  /** The TOTP secret to show the user when mfaSetupRequired is true. */
-  secretCode?: string;
-}
-
 export function signUp(params: { email: string; password: string }): Promise<ISignUpResult> {
   const { email, password } = params;
   const attributes = [new CognitoUserAttribute({ Name: 'email', Value: email })];
@@ -92,117 +78,14 @@ export function confirmSignUp(params: { email: string; code: string }): Promise<
   });
 }
 
-export function signIn(params: { email: string; password: string }): Promise<SignInResult> {
+export function signIn(params: { email: string; password: string }): Promise<void> {
   const { email, password } = params;
   const user = newUser(email);
   const details = new AuthenticationDetails({ Username: email, Password: password });
   return new Promise((resolve, reject) => {
     user.authenticateUser(details, {
-      onSuccess: () => {
-        pendingUser = null;
-        resolve({ mfaRequired: false });
-      },
-      onFailure: (err) => {
-        pendingUser = null;
-        reject(friendlyError(err));
-      },
-      totpRequired: () => {
-        pendingUser = user;
-        resolve({ mfaRequired: true });
-      },
-      mfaRequired: () => {
-        pendingUser = user;
-        resolve({ mfaRequired: true });
-      },
-      // First-time sign-in for a user with no MFA yet: Cognito issues an
-      // MFA_SETUP challenge. Associate a TOTP secret and hand it to the UI so the
-      // user can enroll an authenticator, then finish with completeMfaSetup().
-      mfaSetup: () => {
-        pendingUser = user;
-        user.associateSoftwareToken({
-          associateSecretCode: (secretCode: string) => {
-            resolve({ mfaRequired: false, mfaSetupRequired: true, secretCode });
-          },
-          onFailure: (err: unknown) => {
-            pendingUser = null;
-            reject(friendlyError(err));
-          },
-        });
-      },
-    });
-  });
-}
-
-/** Build an otpauth:// URI so authenticator apps can add the account by QR or link. */
-export function buildTotpUri(email: string, secretCode: string): string {
-  const issuer = 'AudioLearningCompanion';
-  const label = encodeURIComponent(`${issuer}:${email}`);
-  return `otpauth://totp/${label}?secret=${secretCode}&issuer=${issuer}`;
-}
-
-/** Complete first-time TOTP enrollment during sign-in. Resolves once authenticated. */
-export function completeMfaSetup(code: string): Promise<void> {
-  const user = pendingUser;
-  if (!user) return Promise.reject(new Error('No sign-in in progress'));
-  return new Promise((resolve, reject) => {
-    user.verifySoftwareToken(code, 'Authenticator', {
-      onSuccess: () => {
-        pendingUser = null;
-        resolve();
-      },
-      onFailure: (err: unknown) => reject(friendlyError(err)),
-    });
-  });
-}
-
-export function verifyMfa(params: { code: string }): Promise<void> {
-  const user = pendingUser;
-  if (!user) return Promise.reject(new Error('No sign-in in progress'));
-  return new Promise((resolve, reject) => {
-    user.sendMFACode(
-      params.code,
-      {
-        onSuccess: () => {
-          pendingUser = null;
-          resolve();
-        },
-        onFailure: (err) => reject(friendlyError(err)),
-      },
-      'SOFTWARE_TOKEN_MFA'
-    );
-  });
-}
-
-export function setupTotp(): Promise<string> {
-  const user = pool().getCurrentUser();
-  if (!user) return Promise.reject(new Error('Not authenticated'));
-  return new Promise((resolve, reject) => {
-    user.getSession((err: Error | null) => {
-      if (err) return reject(friendlyError(err));
-      user.associateSoftwareToken({
-        associateSecretCode: (secretCode: string) => resolve(secretCode),
-        onFailure: (e: unknown) => reject(friendlyError(e)),
-      });
-    });
-  });
-}
-
-export function verifyTotpSetup(code: string): Promise<void> {
-  const user = pool().getCurrentUser();
-  if (!user) return Promise.reject(new Error('Not authenticated'));
-  return new Promise((resolve, reject) => {
-    user.getSession((err: Error | null) => {
-      if (err) return reject(friendlyError(err));
-      user.verifySoftwareToken(code, 'Authenticator', {
-        onSuccess: () => {
-          user.setUserMfaPreference(
-            null,
-            { PreferredMfa: true, Enabled: true },
-            (e) => (e ? reject(friendlyError(e)) : resolve())
-          );
-        },
-        onFailure: (e: unknown) => reject(friendlyError(e)),
-      });
+      onSuccess: () => resolve(),
+      onFailure: (err) => reject(friendlyError(err)),
     });
   });
 }
@@ -223,30 +106,23 @@ export async function getIdToken(): Promise<string | null> {
   return session ? session.getIdToken().getJwtToken() : null;
 }
 
-export function getCurrentUser(): Promise<AuthUser | null> {
-  const user = pool().getCurrentUser();
-  if (!user) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    user.getSession((err: Error | null, session: CognitoUserSession | null) => {
-      if (err || !session || !session.isValid()) return resolve(null);
-      user.getUserAttributes((attrErr, attributes) => {
-        if (attrErr || !attributes) return resolve(null);
-        const map: Record<string, string> = {};
-        for (const attr of attributes) map[attr.getName()] = attr.getValue();
-        resolve({
-          sub: map.sub ?? '',
-          email: map.email ?? '',
-          emailVerified: map.email_verified === 'true',
-        });
-      });
-    });
-  });
+export async function getCurrentUser(): Promise<AuthUser | null> {
+  const session = await getSession();
+  if (!session) return null;
+  const claims = session.getIdToken().payload as Record<string, unknown>;
+  const sub = typeof claims.sub === 'string' ? claims.sub : '';
+  const email = typeof claims.email === 'string' ? claims.email : '';
+  if (!sub) return null;
+  return {
+    sub,
+    email,
+    emailVerified: claims.email_verified === true || claims.email_verified === 'true',
+  };
 }
 
 export function signOut(): void {
   const user = pool().getCurrentUser();
   if (user) user.signOut();
-  pendingUser = null;
 }
 
 export function forgotPassword(email: string): Promise<void> {

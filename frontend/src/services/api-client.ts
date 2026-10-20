@@ -112,6 +112,10 @@ export function listLectures(): Promise<ListLecturesResponse> {
   return request<ListLecturesResponse>('/lectures');
 }
 
+export function getLecture(lectureId: string): Promise<Lecture> {
+  return request<Lecture>(`/lectures/${encodeURIComponent(lectureId)}`);
+}
+
 export function getProfile(): Promise<ProfileResponse> {
   return request<ProfileResponse>('/profile');
 }

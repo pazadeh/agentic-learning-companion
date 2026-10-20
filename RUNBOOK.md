@@ -121,6 +121,19 @@ it up immediately.
   LecturesTable. Sources are `current_request`, `explicit`, `inferred`, or `default`,
   in that precedence order. AgentCore Memory supplies semantic facts only.
 
+## Troubleshooting offline downloads
+
+- **Save offline is disabled**: the browser reports offline; reconnect before fetching
+  the owned transcript and audio.
+- **Not enough storage**: Nova WAV uses about 2.9 MB per minute. Remove other offline
+  copies from History or free browser storage, then retry. The cloud lecture is unaffected.
+- **Legacy lecture says audio only**: lectures created before deterministic transcript
+  persistence have no matching text; the app never regenerates or fabricates one.
+- **Saved lecture is missing after sign-in with another account**: downloads are scoped
+  to the Cognito user ID by design and are not exposed across accounts on a shared browser.
+- **Cold offline launch shows sign-in**: cached identity is accepted only while its ID
+  token remains unexpired. Reconnect and sign in before the next offline period.
+
 ## Troubleshooting Nova Sonic narration
 
 - **`ImportError` for `aws_sdk_bedrock_runtime`**: the AgentCore direct-code runtime

@@ -1,19 +1,25 @@
 /* Audio Learning Companion service worker.
- * - HTML document (navigation): network-first, so the latest markup AND response
- *   headers (e.g. CSP) are always used when online; falls back to cached shell offline.
- * - Hashed static assets: cache-first (they're immutable).
- * - API calls: network-first (never cached).
- * - Audio: cache-first so lectures play offline once heard.
- *
- * Bump the cache version when shipping changes so old caches are purged on activate.
+ * The shell is cached during install so saved lectures can be opened offline.
+ * User audio/transcripts are managed explicitly in owner-scoped IndexedDB, never
+ * opportunistically under expiring presigned URLs.
  */
-const SHELL_CACHE = 'alc-shell-v3';
-const AUDIO_CACHE = 'alc-audio-v3';
-const SHELL_ASSETS = ['/', '/index.html', '/manifest.json'];
+const SHELL_CACHE = 'alc-shell-v4';
+const SHELL_ASSETS = ['/', '/index.html', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_ASSETS)).then(() => self.skipWaiting())
+    (async () => {
+      const cache = await caches.open(SHELL_CACHE);
+      const response = await fetch('/index.html', { cache: 'no-store' });
+      const markup = await response.clone().text();
+      await cache.put('/index.html', response);
+      await cache.put('/', await fetch('/', { cache: 'no-store' }));
+      const hashedAssets = [...markup.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(
+        (match) => match[1]
+      );
+      await cache.addAll([...SHELL_ASSETS.slice(2), ...hashedAssets]);
+      await self.skipWaiting();
+    })()
   );
 });
 
@@ -21,13 +27,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) =>
-        Promise.all(
-          keys
-            .filter((key) => key !== SHELL_CACHE && key !== AUDIO_CACHE)
-            .map((key) => caches.delete(key))
-        )
-      )
+      .then((keys) => Promise.all(keys.filter((key) => key !== SHELL_CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
@@ -35,22 +35,20 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
-
   const url = new URL(request.url);
 
-  // API calls: network-first, never cached.
-  if (url.pathname.includes('/jobs/') || url.pathname.includes('/audio/refresh')) {
-    event.respondWith(fetch(request).catch(() => new Response('', { status: 503 })));
-    return;
-  }
+  // API and presigned S3 requests remain network-only. Explicit offline saves are
+  // stored in IndexedDB under the authenticated owner, without credentials in keys.
+  if (url.origin !== self.location.origin) return;
 
-  // HTML document navigations: network-first so markup + headers stay fresh.
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(SHELL_CACHE).then((cache) => cache.put('/index.html', copy));
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(SHELL_CACHE).then((cache) => cache.put('/index.html', copy));
+          }
           return response;
         })
         .catch(() => caches.match('/index.html'))
@@ -58,20 +56,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Audio files: cache-first for offline listening.
-  if (url.pathname.endsWith('.mp3') || url.hostname.includes('s3')) {
-    event.respondWith(
-      caches.open(AUDIO_CACHE).then(async (cache) => {
-        const cached = await cache.match(request);
-        if (cached) return cached;
-        const response = await fetch(request);
-        if (response.ok) cache.put(request, response.clone());
-        return response;
-      })
-    );
-    return;
-  }
-
-  // Other static assets (hashed JS/CSS, icons): cache-first, fall back to network.
-  event.respondWith(caches.match(request).then((cached) => cached || fetch(request)));
+  event.respondWith(
+    caches.open(SHELL_CACHE).then(async (cache) => {
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      const response = await fetch(request);
+      if (response.ok) await cache.put(request, response.clone());
+      return response;
+    })
+  );
 });

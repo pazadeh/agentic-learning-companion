@@ -4,11 +4,16 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type Dispatch,
   type ReactNode,
 } from 'react';
 import type { AppPage, AppState, ChatMessage, Lecture } from '../types';
 import { getItem, setItem, STORAGE_KEYS } from '../utils/storage';
+import {
+  revokeAllOfflineAudioUrls,
+  revokeOfflineAudioUrlValue,
+} from '../services/offline-lectures';
 
 type Action =
   | { type: 'SET_PAGE'; page: AppPage }
@@ -65,6 +70,20 @@ const AppStateContext = createContext<AppStateContextValue | undefined>(undefine
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const previousAudioUrl = useRef<string | null>(null);
+
+  useEffect(() => {
+    const previous = previousAudioUrl.current;
+    if (previous && previous !== state.audioUrl) revokeOfflineAudioUrlValue(previous);
+    previousAudioUrl.current = state.audioUrl;
+  }, [state.audioUrl]);
+
+  useEffect(
+    () => () => {
+      revokeAllOfflineAudioUrls();
+    },
+    []
+  );
 
   useEffect(() => {
     const goOnline = () => dispatch({ type: 'SET_ONLINE', online: true });
