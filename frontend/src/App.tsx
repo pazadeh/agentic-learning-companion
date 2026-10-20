@@ -32,7 +32,7 @@ function Shell() {
         </button>
       </header>
 
-      {!state.isOnline && <div className="banner banner--offline">You are offline. Cached lectures still play.</div>}
+      {!state.isOnline && <div className="banner banner--offline">Offline: lectures saved on this device are available in History.</div>}
       {state.drivingMode && <div className="banner banner--driving">Driving mode: larger controls enabled.</div>}
 
       <main className="app__main">

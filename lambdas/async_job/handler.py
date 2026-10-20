@@ -153,6 +153,8 @@ def handler(event: dict[str, Any], context: Any) -> Any:
             return _job_status(event)
         if method == "GET" and resource.endswith("/jobs/{jobId}/result"):
             return _job_result(event)
+        if method == "GET" and resource.endswith("/lectures/{lectureId}"):
+            return _get_lecture(event)
         if method == "GET" and resource.endswith("/lectures"):
             return _list_lectures(event)
         return _response(404, {"error": "not_found"})
@@ -369,7 +371,8 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
         UpdateExpression=(
             "SET #lecture_id = :lecture_id, #title = :title, #topic = :topic, "
             "#s3_key = :s3_key, #duration = :duration, #audio_provider = :audio_provider, "
-            "#audio_format = :audio_format, #personalization = :personalization, "
+            "#audio_format = :audio_format, #transcript_available = :transcript_available, "
+            "#personalization = :personalization, "
             "#created_at = if_not_exists(#created_at, :created_at)"
         ),
         ExpressionAttributeNames={
@@ -380,6 +383,7 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
             "#duration": "durationMinutes",
             "#audio_provider": "audioProvider",
             "#audio_format": "audioFormat",
+            "#transcript_available": "transcriptAvailable",
             "#personalization": "personalizationUsed",
             "#created_at": "createdAt",
         },
@@ -391,8 +395,53 @@ def _persist_lecture_result(user_id: str, result: dict[str, Any]) -> None:
             ":duration": duration_minutes,
             ":audio_provider": str(lecture.get("audioProvider", ""))[:100],
             ":audio_format": str(lecture.get("audioFormat", ""))[:20],
+            ":transcript_available": bool(lecture.get("transcriptAvailable", False)),
             ":personalization": lecture.get("personalizationUsed", {}),
             ":created_at": created_at,
+        },
+    )
+
+
+def _get_lecture(event: dict[str, Any]) -> dict[str, Any]:
+    """Return one owned lecture with its transcript for explicit offline saving."""
+    user_id = _user_id_from_event(event)
+    raw_id = (event.get("pathParameters") or {}).get("lectureId", "")
+    try:
+        lecture_id = str(uuid.UUID(raw_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValidationError("invalid lecture id") from exc
+    if raw_id != lecture_id:
+        raise ValidationError("invalid lecture id")
+    item = _lectures_table().get_item(
+        Key={"pk": f"USER#{user_id}", "sk": f"LECTURE#{lecture_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+    if not item or not item.get("s3Key"):
+        raise LookupError("lecture not found")
+    transcript_item = _lectures_table().get_item(
+        Key={"pk": f"USER#{user_id}", "sk": f"TRANSCRIPT#{lecture_id}"},
+        ConsistentRead=True,
+    ).get("Item") or {}
+    script = transcript_item.get("script") or item.get("script")  # legacy inline rows
+    if not isinstance(script, str) or not script.strip():
+        script = None
+    return _response(
+        200,
+        {
+            "lectureId": lecture_id,
+            "title": item.get("title", ""),
+            "topic": item.get("topic", ""),
+            "s3Key": item["s3Key"],
+            "durationMinutes": _to_jsonable(item.get("durationMinutes", 0)),
+            "createdAt": item.get("createdAt", ""),
+            "audioProvider": item.get("audioProvider", ""),
+            "audioFormat": item.get("audioFormat", ""),
+            "seriesId": item.get("seriesId"),
+            "episodeId": item.get("episodeId"),
+            "episodeOrder": _to_jsonable(item.get("episodeOrder")),
+            "script": script,
+            "transcriptAvailable": script is not None,
+            "personalizationUsed": _to_jsonable(item.get("personalizationUsed", {})),
         },
     )
 
@@ -429,6 +478,15 @@ def _list_lectures(event: dict[str, Any]) -> dict[str, Any]:
                 "title": item.get("title", ""),
                 "topic": item.get("topic", ""),
                 "s3Key": item.get("s3Key", ""),
+                "audioProvider": item.get("audioProvider", ""),
+                "audioFormat": item.get("audioFormat", ""),
+                "transcriptAvailable": bool(
+                    item.get("transcriptAvailable")
+                    or (isinstance(item.get("script"), str) and item.get("script", "").strip())
+                ),
+                "seriesId": item.get("seriesId"),
+                "episodeId": item.get("episodeId"),
+                "episodeOrder": _to_jsonable(item.get("episodeOrder")),
                 "durationMinutes": _to_jsonable(item.get("durationMinutes", 0)),
                 "createdAt": item.get("createdAt", ""),
                 "listenedSeconds": round(listened),

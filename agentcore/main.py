@@ -20,7 +20,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from agents.orchestrator import build_orchestrator
 from agents.series_planner import plan_series
-from agents import config, memory, progress, run_context
+from agents import config, memory, profile_store, progress, run_context
 from security.audit_logger import log_event
 from security.content_filter import check_topic_safety
 from security.input_validator import (
@@ -284,6 +284,7 @@ def agent_invocation(payload, context):
                 )
                 result = agent(message)
                 lecture = run_context.get_lecture()
+                profile_store.persist_generated_transcript(user_id, lecture)
             response_text = _response_text(result)
             lecture = _tag_series_lecture(user_id, lecture, series_context)
     except Exception as exc:  # noqa: BLE001

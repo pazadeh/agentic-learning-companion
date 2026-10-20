@@ -1,7 +1,7 @@
 """Audio Learning Companion — single CDK stack.
 
 Provisions every AWS resource for the app: encryption (KMS), secrets, DynamoDB,
-S3, Cognito (MFA + email allowlist), Lambdas, API Gateway (Cognito-authorized,
+S3, Cognito (email allowlist), Lambdas, API Gateway (Cognito-authorized,
 throttled), WAF, CloudFront (OAI + security headers), budget, and alarms.
 
 Security posture is enforced here: buckets block all public access, tables are
@@ -274,7 +274,7 @@ class AudioCompanionStack(Stack):
         )
 
         # ----------------------------------------------------------------- #
-        # Cognito User Pool (MFA required, email verification, allowlist)
+        # Cognito User Pool (email verification + allowlist; MFA intentionally off)
         # ----------------------------------------------------------------- #
         user_pool = cognito.UserPool(
             self,
@@ -292,8 +292,7 @@ class AudioCompanionStack(Stack):
                 require_digits=True,
                 require_symbols=True,
             ),
-            mfa=cognito.Mfa.REQUIRED,
-            mfa_second_factor=cognito.MfaSecondFactor(otp=True, sms=False),
+            mfa=cognito.Mfa.OFF,
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
             lambda_triggers=cognito.UserPoolTriggers(pre_sign_up=pre_signup_fn),
             removal_policy=RemovalPolicy.DESTROY,
@@ -305,7 +304,7 @@ class AudioCompanionStack(Stack):
             auth_flows=cognito.AuthFlow(user_srp=True, user_password=False, admin_user_password=False),
             id_token_validity=Duration.hours(1),
             access_token_validity=Duration.hours(1),
-            refresh_token_validity=Duration.days(7),
+            refresh_token_validity=Duration.days(30),
             prevent_user_existence_errors=True,
         )
 
@@ -349,6 +348,15 @@ class AudioCompanionStack(Stack):
         )
 
         cloudfront_origin = f"https://{distribution.distribution_domain_name}"
+        # Explicit offline saves fetch the private presigned object as a Blob. Permit
+        # only the deployed app and local development origins; the bucket remains private.
+        audio_bucket.add_cors_rule(
+            allowed_methods=[s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+            allowed_origins=[cloudfront_origin, "http://localhost:5173"],
+            allowed_headers=["*"],
+            exposed_headers=["Content-Length", "Content-Type", "ETag"],
+            max_age=3600,
+        )
 
         # ----------------------------------------------------------------- #
         # Backend Lambdas
@@ -527,10 +535,10 @@ class AudioCompanionStack(Stack):
         # Lecture history — lists the caller's saved lectures across devices.
         lectures = api.root.add_resource("lectures")
         lectures.add_method("GET", job_integration, **auth_opts)
-        (
-            lectures.add_resource("{lectureId}")
-            .add_resource("playback")
-            .add_method("POST", job_integration, **auth_opts)
+        lecture_id_res = lectures.add_resource("{lectureId}")
+        lecture_id_res.add_method("GET", job_integration, **auth_opts)
+        lecture_id_res.add_resource("playback").add_method(
+            "POST", job_integration, **auth_opts
         )
 
         # Multi-part lecture series — same Lambda, Cognito-protected.

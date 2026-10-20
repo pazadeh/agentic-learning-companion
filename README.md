@@ -7,7 +7,7 @@ listening activity with transparent privacy controls, synthesizes it to audio,
 and lets you listen with full playback controls on any phone or browser.
 
 Designed for private use by 1–5 allowlisted users, deployed publicly with strong
-security hardening (Cognito + MFA, email allowlist, WAF, CloudFront, per-user rate
+security hardening (Cognito, email allowlist, WAF, CloudFront, per-user rate
 limiting, encryption everywhere).
 
 ## Highlights
@@ -17,16 +17,17 @@ limiting, encryption everywhere).
 - Live, truthful generation stages from profile loading through source research, writing,
   Nova speech sessions, upload, and save
 - Cross-device lecture library with fresh, user-scoped audio URLs
+- Explicit owner-scoped offline downloads with audio, transcript, quota handling, and removal
 - Cloud-synced explicit profile plus explainable listening-derived preferences
 - Revision-safe profile edits, idempotent playback telemetry, confidence/decay, opt-out, and reset
-- Cognito MFA/email allowlist, WAF, encryption, scoped IAM, rate limits, and metadata-only audit logs
+- Cognito email/password authentication and allowlist, WAF, encryption, scoped IAM, rate limits, and metadata-only audit logs
 
 ## Architecture
 
 ```text
 Browser / React PWA
    ├─ static app ──► CloudFront + WAF ──► private S3 bucket
-   ├─ sign-in ─────► Cognito (email allowlist + required TOTP MFA)
+   ├─ sign-in ─────► Cognito (email/password + email allowlist)
    └─ ID token ────► API Gateway (Cognito authorizer + throttling)
                          ├─► async_job Lambda
                          │      ├─ jobs, profiles, playback, history, series (DynamoDB)
