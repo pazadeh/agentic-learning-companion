@@ -642,3 +642,21 @@ button { font: inherit; cursor: pointer; }
   .series-plan__actions .btn { width: 100%; }
   .episode-status__heading { flex-direction: column; }
 }
+
+/* ----- Guided lecture design ----- */
+.design-card { margin: 12px 16px; padding: 16px; border: 1px solid #c7d2fe; border-radius: var(--radius); background: #f8faff; }
+.design-card h3 { margin: 0 0 12px; font-size: 1rem; }
+.design-card__heading h3 { margin: 3px 0 14px; font-size: 1.1rem; }
+.design-card__eyebrow { color: var(--indigo); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.design-choices { display: grid; gap: 8px; margin-bottom: 10px; }
+.design-choice { min-height: 48px; padding: 10px 12px; text-align: left; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
+.design-choice:hover, .design-choice.is-selected { border-color: var(--indigo); background: #eef2ff; }
+.design-choice span { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; }
+.design-choice strong { color: var(--indigo); font-size: 0.68rem; text-transform: uppercase; }
+.design-choice small { display: block; margin-top: 3px; color: var(--muted); }
+.design-card__brief { display: grid; gap: 7px; margin: 0 0 14px; }
+.design-card__brief div { display: grid; grid-template-columns: 84px 1fr; gap: 8px; }
+.design-card__brief dt { color: var(--muted); font-size: 0.78rem; }
+.design-card__brief dd { margin: 0; font-size: 0.86rem; }
+.design-card__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.design-card__hint { margin: 9px 0 0; color: var(--muted); font-size: 0.78rem; }

@@ -31,6 +31,7 @@ LIMITS: dict[str, int] = {
     # Planning is cheaper than lecture generation but still invokes a model. The
     # API and AgentCore both enforce this as defense in depth, matching flat jobs.
     "series_plan": 20,
+    "lecture_design": 100,
 }
 
 DEFAULT_LIMIT = 100

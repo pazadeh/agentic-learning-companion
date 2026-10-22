@@ -15,13 +15,15 @@ from typing import Any
 
 _lecture: dict[str, Any] = {}
 _script: str = ""
+_lecture_brief: dict[str, Any] = {}
 
 
 def reset() -> None:
     """Clear the collector at the start of an invocation."""
-    global _lecture, _script
+    global _lecture, _script, _lecture_brief
     _lecture = {}
     _script = ""
+    _lecture_brief = {}
 
 
 def set_lecture(**fields: Any) -> None:
@@ -51,3 +53,14 @@ def set_script(script: str) -> None:
 def get_script() -> str:
     """Return the full script written this invocation (may be empty)."""
     return _script
+
+
+def set_lecture_brief(brief: dict[str, Any] | None) -> None:
+    """Store the validated, user-confirmed generation contract for specialist tools."""
+    global _lecture_brief
+    _lecture_brief = dict(brief or {})
+
+
+def get_lecture_brief() -> dict[str, Any]:
+    """Return the confirmed lecture brief for this invocation."""
+    return dict(_lecture_brief)

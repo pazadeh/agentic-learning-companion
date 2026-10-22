@@ -121,6 +121,18 @@ it up immediately.
   LecturesTable. Sources are `current_request`, `explicit`, `inferred`, or `default`,
   in that precedence order. AgentCore Memory supplies semantic facts only.
 
+## Troubleshooting guided lecture design
+
+- **Design turn fails**: verify `DESIGN_MODEL_ID` is available to the AgentCore role.
+  Design defaults to `PLANNER_MODEL_ID`; the live-account fallback is Sonnet 4.6.
+- **No buttons appear**: a design response must contain 2–5 validated choices. Invalid
+  question output is replaced with a safe goal question; inspect AgentCore logs if the
+  fallback appears repeatedly.
+- **Lecture starts too early**: only the final **Generate lecture** action may submit an
+  `action=lecture` job. Design turns use `action=design` and the tool-free design agent.
+- **Custom preference**: the composer remains active under every question and sends typed
+  text through the same refinement path as button values.
+
 ## Troubleshooting offline downloads
 
 - **Save offline is disabled**: the browser reports offline; reconnect before fetching

@@ -26,8 +26,30 @@ Starts an asynchronous lecture run.
 }
 ```
 
-`message` is required and limited to 2,000 characters. `action` is `lecture` or
-`chat`; the frontend currently uses `lecture` for generation.
+`message` is required and limited to 2,000 characters. `action` is `lecture`,
+`design`, or `chat`. A design turn additionally carries a bounded `design_context`:
+
+```json
+{
+  "message": "I want a practical introduction",
+  "action": "design",
+  "design_context": {
+    "request": "Help me understand Kubernetes",
+    "answer": "I want a practical introduction",
+    "brief": { "topic": "Kubernetes", "durationMinutes": 15 },
+    "history": [{ "role": "user", "content": "Kubernetes" }],
+    "turn": 2
+  }
+}
+```
+
+A completed design job returns `result.design` with `message`, validated `brief`,
+`readyForConfirmation`, and either one `question` containing 2–5 choices or `null`.
+Design jobs never return a lecture or invoke research/audio generation. The frontend
+starts a separate `action=lecture` job only after explicit confirmation and sends the
+validated `lecture_brief` alongside the human-readable prompt. AgentCore carries that
+brief structurally through research and writing, rather than relying on the orchestrator
+to reconstruct confirmed choices from prose.
 
 ```json
 {

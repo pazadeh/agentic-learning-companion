@@ -12,6 +12,7 @@ limiting, encryption everywhere).
 
 ## Highlights
 
+- Guided **Design with AI** conversations with quick-choice buttons, typed alternatives, and explicit confirmation
 - Single personalized lectures and editable 2–8 episode lecture series
 - Multi-agent research, long-form writing, Nova 2.5 Sonic narration, and durable orchestration
 - Live, truthful generation stages from profile loading through source research, writing,

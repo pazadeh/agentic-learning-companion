@@ -29,6 +29,14 @@ different user_id from the conversation.
 Resolved personalization (already applies current request > explicit profile > confident
 behavioral inference > defaults):
 {personalization_context}
+
+User-confirmed lecture brief (empty for Quick lecture):
+{lecture_brief_context}
+When this brief is non-empty, preserve its objective, scope, exclusions, example context,
+tone, language, freshness, and reinforcement. Do not replace confirmed choices with defaults.
+Use its topic plus include/exclude scope for research, and let generate_lecture read the
+same structured brief from invocation context.
+
 Use these exact resolved values for research depth and generate_lecture arguments. Do not
 infer or save different persistent preferences yourself.
 
@@ -76,6 +84,7 @@ def build_orchestrator(
     user_id: str,
     memory_context: str = "",
     personalization_context: dict[str, Any] | None = None,
+    lecture_brief: dict[str, Any] | None = None,
 ) -> Agent:
     """Construct a per-request orchestrator agent bound to ``user_id``.
 
@@ -92,6 +101,7 @@ def build_orchestrator(
         user_id=user_id,
         default_duration=config.DEFAULT_DURATION_MINUTES,
         personalization_context=json.dumps(personalization_context or {}, sort_keys=True),
+        lecture_brief_context=json.dumps(lecture_brief or {}, sort_keys=True),
     )
     if memory_context.strip():
         system_prompt += "\n" + _MEMORY_PREAMBLE.format(memory_context=memory_context)
