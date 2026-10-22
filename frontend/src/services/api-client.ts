@@ -7,6 +7,7 @@ import { getIdToken } from './cognito-auth';
 import type {
   Job,
   Lecture,
+  LectureDesignBrief,
   PlaybackUpdate,
   ProfileResponse,
   SeriesDetail,
@@ -82,8 +83,24 @@ export interface StartJobResponse {
   status: string;
 }
 
-export function startJob(message: string, action: 'lecture' | 'chat' = 'lecture'): Promise<StartJobResponse> {
-  return request<StartJobResponse>('/jobs/start', { method: 'POST', body: { message, action } });
+export interface DesignContext {
+  request: string;
+  answer: string;
+  brief?: Partial<LectureDesignBrief>;
+  history: { role: 'user' | 'assistant'; content: string }[];
+  turn: number;
+}
+
+export function startJob(
+  message: string,
+  action: 'lecture' | 'chat' | 'design' = 'lecture',
+  designContext?: DesignContext,
+  lectureBrief?: LectureDesignBrief
+): Promise<StartJobResponse> {
+  return request<StartJobResponse>('/jobs/start', {
+    method: 'POST',
+    body: { message, action, design_context: designContext, lecture_brief: lectureBrief },
+  });
 }
 
 export function getJobStatus(jobId: string): Promise<Job> {

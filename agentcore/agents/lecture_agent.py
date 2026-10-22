@@ -77,7 +77,9 @@ def _truncate_to_sentence(text: str, max_chars: int) -> str:
     return clipped.strip()
 
 
-def _write_script(writer: Agent, first_prompt: str, word_target: int) -> str:
+def _write_script(
+    writer: Agent, first_prompt: str, word_target: int, reinforcement: str = "recap"
+) -> str:
     """Write the lecture in parts until it approaches ``word_target`` words.
 
     The writer Agent keeps conversation history across calls, so each continuation
@@ -115,14 +117,23 @@ def _write_script(writer: Agent, first_prompt: str, word_target: int) -> str:
             f"Drafted {len(script.split())} of about {word_target} words",
         )
 
-    # Ask for a brief spoken closing if we haven't clearly wrapped up.
-    if len(script) < _MAX_SCRIPT_CHARS:
-        closing = _extract_text(
-            writer(
-                "Now write a short, warm spoken closing that recaps the key takeaways "
-                "in a few sentences. Do not introduce new topics."
-            )
-        )
+    # Apply the confirmed reinforcement contract rather than always forcing a recap.
+    if len(script) < _MAX_SCRIPT_CHARS and reinforcement != "none":
+        closing_instruction = {
+            "reflection": (
+                "End with two concise spoken reflection questions. Do not answer them "
+                "or introduce new topics."
+            ),
+            "memory-hooks": (
+                "End with a short set of memorable verbal hooks or analogies that help "
+                "the learner retain the core ideas. Do not introduce new topics."
+            ),
+            "recap": (
+                "Write a short, warm spoken closing that recaps the key takeaways in a "
+                "few sentences. Do not introduce new topics."
+            ),
+        }.get(reinforcement, "Write a short spoken recap without new topics.")
+        closing = _extract_text(writer(closing_instruction))
         if 0 < len(closing.split()) < 400:
             script = f"{script}\n\n{closing}".strip()
             progress.report(
@@ -158,23 +169,42 @@ def generate_lecture(
     Returns:
         A JSON string: {title, word_count, target_word_count, duration_minutes}.
     """
+    brief = run_context.get_lecture_brief()
     word_target = _word_target(duration_minutes)
 
+    confirmed_style = brief.get("learningStyle", learning_style)
     style_hint = {
         "examples": "Lead with concrete, relatable examples before generalizing.",
         "theory": "Emphasize underlying principles and the why behind each idea.",
         "practical": "Focus on practical application and actionable takeaways.",
-    }.get(learning_style, "Lead with concrete, relatable examples.")
+        "story": "Use a coherent narrative arc and vivid examples while preserving rigor.",
+        "step-by-step": "Teach as a clear sequence of steps, decisions, and examples.",
+    }.get(confirmed_style, "Lead with concrete, relatable examples.")
+
+    contract_lines = []
+    if brief:
+        contract_lines = [
+            f"Confirmed learning objective: {brief['learningObjective']}",
+            f"Confirmed tone: {brief['tone']}",
+            f"Language: {brief['language']}",
+            f"Must include: {', '.join(brief['includeTopics']) or 'the essential scope'}",
+            f"Must exclude: {', '.join(brief['excludeTopics']) or 'nothing additional'}",
+            f"Example context: {brief['exampleContext'] or 'choose an appropriate example'}",
+            f"Reinforcement: {brief['reinforcement']}",
+            f"Source freshness: {brief['sourceFreshness']}",
+        ]
+    contract = "\n".join(contract_lines)
 
     first_prompt = (
         f"Write a spoken-word lecture on: {topic}\n\n"
         f"Learner knowledge level: {knowledge_level}\n"
-        f"Preferred learning style: {learning_style}. {style_hint}\n"
+        f"Preferred learning style: {confirmed_style}. {style_hint}\n"
         f"Target length: about {word_target} words "
         f"(~{duration_minutes} minutes at 150 words per minute). This is a LONG "
         "lecture; pace yourself, cover the material in depth, and do not rush to a "
         "conclusion.\n\n"
-        f"Ground the lecture in this research (do not read URLs aloud):\n"
+        + (f"User-confirmed lecture contract:\n{contract}\n\n" if contract else "")
+        + "Ground the lecture in this research (do not read URLs aloud):\n"
         f"{research_results[:8000]}\n\n"
         "Begin the lecture now. Return ONLY spoken lecture prose — no preamble, no "
         "markdown, no headings."
@@ -193,7 +223,12 @@ def generate_lecture(
         additional_request_fields=config.model_request_fields(config.LECTURE_MODEL_ID),
     )
     writer = Agent(model=model, system_prompt=_LECTURE_SYSTEM_PROMPT)
-    script = _write_script(writer, first_prompt, word_target)
+    script = _write_script(
+        writer,
+        first_prompt,
+        word_target,
+        reinforcement=brief.get("reinforcement", "recap"),
+    )
 
     # Hand the full script to the synthesis step directly (not via the orchestrator).
     run_context.set_script(script)
@@ -204,7 +239,7 @@ def generate_lecture(
         f"{len(script.split())} words ready for audio",
     )
 
-    title = topic.strip().capitalize()
+    title = (brief.get("title") or topic).strip()
     word_count = len(script.split())
 
     return json.dumps(

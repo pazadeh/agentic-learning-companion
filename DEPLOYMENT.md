@@ -60,7 +60,8 @@ returns an account-availability denial.
 >
 > If a real 5.5 invocation returns an account-availability denial, deploy with
 > `ORCHESTRATOR_MODEL_ID=us.anthropic.claude-sonnet-4-6`,
-> `PLANNER_MODEL_ID=us.anthropic.claude-sonnet-4-6`, and
+> `PLANNER_MODEL_ID=us.anthropic.claude-sonnet-4-6`,
+> `DESIGN_MODEL_ID=us.anthropic.claude-sonnet-4-6`, and
 > `LECTURE_MODEL_ID=us.anthropic.claude-sonnet-4-6`. This changes text generation only;
 > Nova narration remains `amazon.nova-2-5-sonic`.
 
@@ -126,8 +127,8 @@ environment variables to the runtime (names come from `outputs.json`):
 - `TAVILY_SECRET_NAME=audio-companion/tavily-api-key`
 - `MEMORY_ID` (the `MemoryId` output — enables semantic recall of prior topics;
   omit to disable AgentCore Memory)
-- `ORCHESTRATOR_MODEL_ID`, `PLANNER_MODEL_ID`, `LECTURE_MODEL_ID`,
-  `LECTURE_TARGET_FACTOR` (optional text-model overrides)
+- `ORCHESTRATOR_MODEL_ID`, `PLANNER_MODEL_ID`, `DESIGN_MODEL_ID`,
+  `LECTURE_MODEL_ID`, `LECTURE_TARGET_FACTOR` (optional text-model overrides)
 - `NARRATION_PROVIDER=nova-sonic`, `NOVA_MODEL_ID=amazon.nova-2-5-sonic`,
   `NOVA_VOICE_ID=tiffany`, `NOVA_SESSION_MAX_WORDS=900`, and
   `NOVA_TOTAL_TIMEOUT_SECONDS=660`
@@ -148,6 +149,7 @@ AWS_PROFILE=<profile> agentcore deploy --agent audiocompanion \
   --env MEMORY_ID=<MemoryId> \
   --env ORCHESTRATOR_MODEL_ID=us.anthropic.claude-sonnet-5-5 \
   --env PLANNER_MODEL_ID=us.anthropic.claude-haiku-5-5 \
+  --env DESIGN_MODEL_ID=us.anthropic.claude-haiku-5-5 \
   --env LECTURE_MODEL_ID=us.anthropic.claude-sonnet-5-5 \
   --env LECTURE_TARGET_FACTOR=0.8 \
   --env NARRATION_PROVIDER=nova-sonic \

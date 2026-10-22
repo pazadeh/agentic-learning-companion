@@ -69,6 +69,48 @@ export interface LectureResult {
   audioFormat?: 'wav' | 'mp3' | string;
 }
 
+export interface LectureDesignBrief {
+  topic: string;
+  title: string;
+  learningObjective: string;
+  knowledgeLevel: 'beginner' | 'intermediate' | 'advanced';
+  durationMinutes: number;
+  depth: 'overview' | 'standard' | 'deep';
+  learningStyle: 'examples' | 'theory' | 'practical' | 'story' | 'step-by-step';
+  tone: string;
+  includeTopics: string[];
+  excludeTopics: string[];
+  exampleContext: string;
+  reinforcement: 'recap' | 'reflection' | 'memory-hooks' | 'none';
+  sourceFreshness: 'current' | 'timeless';
+  language: string;
+  _designFinalized?: boolean;
+}
+
+export interface LectureDesignChoice {
+  id: string;
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface LectureDesignQuestion {
+  id: string;
+  prompt: string;
+  selection: 'single' | 'multiple';
+  allowCustomAnswer: boolean;
+  choices: LectureDesignChoice[];
+}
+
+export interface LectureDesign {
+  message: string;
+  brief: LectureDesignBrief;
+  readyForConfirmation: boolean;
+  question: LectureDesignQuestion | null;
+  turn: number;
+}
+
 export type GenerationStage =
   | 'queued'
   | 'preparing'
@@ -94,7 +136,7 @@ export interface Job {
   stage_detail?: string;
   updated_at?: number;
   error?: string;
-  result?: { response: string; lecture?: LectureResult };
+  result?: { response: string; lecture?: LectureResult; design?: LectureDesign };
 }
 
 export type SeriesStatus =

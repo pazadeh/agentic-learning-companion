@@ -15,7 +15,7 @@ from typing import Any
 
 from strands import tool
 
-from . import config, progress, research_ranking
+from . import config, progress, research_ranking, run_context
 
 logger = logging.getLogger("audio_companion.agents.research")
 
@@ -121,6 +121,19 @@ def research_topic(topic: str, depth: str = "standard") -> str:
     Returns:
         A JSON string with ranked, credibility-tagged sources and a tier breakdown.
     """
+    brief = run_context.get_lecture_brief()
+    if brief.get("depth") == "overview":
+        depth = "quick"
+    elif brief.get("depth") == "deep":
+        depth = "deep"
+    scope_parts = [topic]
+    if brief.get("includeTopics"):
+        scope_parts.append("include " + ", ".join(brief["includeTopics"]))
+    if brief.get("excludeTopics"):
+        scope_parts.append("exclude " + ", ".join(brief["excludeTopics"]))
+    if brief.get("sourceFreshness") == "current":
+        scope_parts.append("current latest developments")
+    scoped_topic = "; ".join(scope_parts)
     n_by_depth = {"quick": 3, "standard": 5, "deep": 8}
     n_searches = min(n_by_depth.get(depth, 5), config.MAX_SEARCHES_PER_LECTURE)
 
@@ -134,14 +147,14 @@ def research_topic(topic: str, depth: str = "standard") -> str:
     # Varied angles, including ones biased toward authoritative material (textbooks,
     # lecture notes, peer-reviewed research). Trimmed to the number of searches.
     angles = [
-        topic,
-        f"{topic} explained with examples",
-        f"{topic} key concepts",
-        f"{topic} textbook overview",
-        f"{topic} university lecture notes",
-        f"{topic} peer-reviewed research",
-        f"{topic} common misconceptions",
-        f"{topic} recent developments",
+        scoped_topic,
+        f"{scoped_topic} explained with examples",
+        f"{scoped_topic} key concepts",
+        f"{scoped_topic} textbook overview",
+        f"{scoped_topic} university lecture notes",
+        f"{scoped_topic} peer-reviewed research",
+        f"{scoped_topic} common misconceptions",
+        f"{scoped_topic} recent developments",
     ][:n_searches]
 
     seen_urls: set[str] = set()

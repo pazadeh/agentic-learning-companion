@@ -165,6 +165,7 @@ flowchart TB
     subgraph tools["Specialist tools (agents & functions)"]
         direction TB
         profile["Persistence tools<br/><i>get explicit profile · save lecture</i>"]
+        designer["Lecture Design Agent<br/><i>brief + one button question · no tools</i>"]
         planner["Series Planner Agent<br/><i>strict JSON · Claude Haiku 5.5 (low)</i>"]
         research["Research Agent<br/><i>research_topic · web_search</i>"]
         ranking["Source ranking<br/><i>authority + relevance tiers</i>"]
@@ -186,6 +187,7 @@ flowchart TB
 
     resolved --> entry
     entry -->|"lecture: build_orchestrator(...)"| brain
+    entry -->|"lecture_design"| designer
     entry -->|"series_plan"| planner
     entry -.->|"retrieve_user_memories"| acmemory
     entry -.->|"record_interaction (turn event)"| acmemory
@@ -196,6 +198,7 @@ flowchart TB
     brain -->|"4 · synthesize + upload"| audio
     brain -->|"5 · persist metadata"| profile
 
+    designer --> bedrock
     planner --> bedrock
     profile --> ddb
     research --> tavily
@@ -216,7 +219,7 @@ flowchart TB
 
     class entry entryCls;
     class brain orchCls;
-    class profile,planner,research,ranking,lecture,audio toolCls;
+    class profile,designer,planner,research,ranking,lecture,audio toolCls;
     class resolved,runctx ctxCls;
     class ddb,tavily,bedrock,speech,s3audio,acmemory backCls;
 ```
@@ -231,6 +234,7 @@ available fallback; the current live account uses Sonnet 4.6 for text roles whil
 |---|---|---|
 | **Orchestrator** | `us.anthropic.claude-sonnet-5-5` (low, between-tools) | Conversational controller. Loads the profile, then drives the fixed tool sequence; never teaches directly and never claims completion without a real `s3Key`. |
 | **Research Agent** | — (Tavily API) | Runs several varied search "angles" (quick/standard/deep = 3/5/8 queries), deduplicates, and ranks sources by domain **authority** blended with **relevance**. Optional trusted-only mode keeps academic/reference/encyclopedic tiers. |
+| **Lecture Design Agent** | `DESIGN_MODEL_ID` (defaults to planner model) | Runs a bounded 1–3-turn, tool-free conversation that returns a validated lecture brief and at most one 2–5-choice question. It cannot research or generate audio; only the user's confirmation enters the normal lecture pipeline. |
 | **Series Planner Agent** | `us.anthropic.claude-haiku-5-5` (low, thinking off) | Produces a validated 2–8 episode JSON plan only. It never researches, writes lecture prose, or synthesizes audio. |
 | **Lecture Agent** | `us.anthropic.claude-sonnet-5-5` (low, target factor 0.8) | Composes spoken prose iteratively and stores the full script in `run_context`. The calibrated target corrects model verbosity while preserving requested spoken duration. |
 | **Audio Agent** | — (Nova 2.5 Sonic; Polly rollback) | Splits prose into ≤900-word sentence-aligned sessions (~6 minutes each), streams each through Nova with Tiffany, retries a failed session without publishing partial audio, adds short faded joins, and uploads one 24 kHz PCM WAV to `audio/{user_id}/{lecture_id}/lecture.wav`. `NARRATION_PROVIDER=polly` restores Neural Joanna MP3 generation. |
@@ -260,7 +264,26 @@ using just the DynamoDB profile.
 
 ---
 
-## 3. Lecture request lifecycle
+## 3. Guided lecture design
+
+`Design with AI` uses the normal authenticated asynchronous job channel with
+`action=design` / `request_type=lecture_design`. Each turn carries only the original
+request, current validated brief, up to six short conversation messages, and a turn
+number from 1–3. The tool-free design agent returns one concise message, an updated
+brief, and either one structured question with 2–5 button choices or
+`readyForConfirmation=true`.
+
+Buttons and typed answers enter the same design-turn API. Multiple-choice questions
+accumulate selections before submission; typed alternatives remain available until the
+third and final turn. The final card shows objective, level, length, depth, style, scope,
+examples, and reinforcement. Only **Generate lecture** sends the validated brief
+structurally into the existing research → writing → Nova pipeline; the brief remains
+available for retry if generation fails. Design turns therefore cannot incur synthesis
+cost or claim that a lecture exists.
+
+---
+
+## 4. Lecture request lifecycle
 
 An end-to-end "teach me X" lecture request, from tap to playback:
 
@@ -338,7 +361,7 @@ set of operation landmarks—not an estimate of elapsed time.
 
 ---
 
-## 4. Multi-part lecture series
+## 5. Multi-part lecture series
 
 Long subjects (for example a book across 4 × 30-minute lectures) are planned once,
 reviewed by the learner, then generated **one episode at a time**. Each episode is a
@@ -391,7 +414,7 @@ episode by episode.
 
 ---
 
-## 5. Offline lecture library
+## 6. Offline lecture library
 
 Users explicitly choose **Save offline** for an owned lecture. The browser fetches the
 owned detail record and a fresh presigned audio object while online, checks available
@@ -411,7 +434,7 @@ adding a separate device PIN is intentionally outside this feature.
 
 ---
 
-## 6. Adaptive learner profile
+## 7. Adaptive learner profile
 
 The learner model separates declared settings from behavioral evidence. Explicit
 settings are stored at `ProfilesTable: USER#{userId} / PROFILE#EXPLICIT`; temporary

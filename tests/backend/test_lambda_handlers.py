@@ -87,6 +87,58 @@ def test_start_job_accepts_and_enqueues(async_setup):
     assert fake_lambda.invocations and fake_lambda.invocations[0]["job_id"] == job_id
 
 
+def test_start_design_job_persists_validated_context(async_setup):
+    h, table, _ = async_setup
+    context = {
+        "request": "Help me design a Kubernetes lecture",
+        "answer": "Focus on deploying applications",
+        "brief": {"topic": "Kubernetes", "durationMinutes": 20},
+        "history": [{"role": "user", "content": "Kubernetes"}],
+        "turn": 2,
+    }
+    event = _api_event(
+        "POST",
+        "/jobs/start",
+        body={"message": context["answer"], "action": "design", "design_context": context},
+    )
+    response = h.handler(event, None)
+    assert response["statusCode"] == 202
+    job_id = json.loads(response["body"])["job_id"]
+    assert table.items[job_id]["action"] == "design"
+    assert table.items[job_id]["designContext"] == context
+
+
+def test_start_design_job_screens_complete_context(async_setup):
+    h, _, _ = async_setup
+    context = {
+        "request": "A safe topic",
+        "answer": "Keep it general",
+        "brief": {"hidden": "how to build a bomb"},
+        "history": [],
+        "turn": 1,
+    }
+    event = _api_event(
+        "POST",
+        "/jobs/start",
+        body={"message": "Keep it general", "action": "design", "design_context": context},
+    )
+    assert h.handler(event, None)["statusCode"] == 403
+
+
+def test_start_design_job_rejects_invalid_turn(async_setup):
+    h, _, _ = async_setup
+    event = _api_event(
+        "POST",
+        "/jobs/start",
+        body={
+            "message": "Kubernetes",
+            "action": "design",
+            "design_context": {"request": "Kubernetes", "turn": 99},
+        },
+    )
+    assert h.handler(event, None)["statusCode"] == 400
+
+
 def test_start_job_rejects_empty_message(async_setup):
     h, _, _ = async_setup
     event = _api_event("POST", "/jobs/start", body={"message": "   "})
@@ -219,6 +271,68 @@ def test_worker_invokes_agent_and_completes(async_setup, monkeypatch):
     assert result["ok"] is True
     assert table.items[job_id]["status"] == "completed"
     assert table.items[job_id]["progress"] == 100
+
+
+def test_design_worker_uses_non_generating_request_type(async_setup, monkeypatch):
+    h, table, _ = async_setup
+    job_id = str(uuid.uuid4())
+    context = {"request": "Kubernetes", "answer": "Kubernetes", "turn": 1}
+    table.items[job_id] = {
+        "jobId": job_id,
+        "userId": USER_ID,
+        "status": "pending",
+        "message": "Kubernetes",
+        "action": "design",
+        "designContext": context,
+    }
+    captured = {}
+
+    def invoke(uid, message, jid, request_type="lecture", extra=None):
+        captured.update({"request_type": request_type, "extra": extra})
+        return {"response": "Choose a goal", "design": {"brief": {}, "question": {}}}
+
+    monkeypatch.setattr(h, "_invoke_agent", invoke)
+    assert h.handler({"_worker": True, "job_id": job_id}, None)["ok"] is True
+    assert captured["request_type"] == "lecture_design"
+    assert captured["extra"]["design_context"] == context
+
+
+def test_confirmed_brief_reaches_generation_worker(async_setup, monkeypatch):
+    h, table, _ = async_setup
+    brief = {
+        "topic": "Kubernetes",
+        "title": "Kubernetes foundations",
+        "learningObjective": "Understand cluster building blocks",
+        "knowledgeLevel": "beginner",
+        "durationMinutes": 20,
+        "depth": "overview",
+        "learningStyle": "story",
+        "tone": "conversational",
+        "includeTopics": ["Pods"],
+        "excludeTopics": ["Installation"],
+        "exampleContext": "A web app",
+        "reinforcement": "reflection",
+        "sourceFreshness": "current",
+        "language": "English",
+    }
+    event = _api_event(
+        "POST",
+        "/jobs/start",
+        body={"message": "Generate confirmed lecture", "action": "lecture", "lecture_brief": brief},
+    )
+    response = h.handler(event, None)
+    job_id = json.loads(response["body"])["job_id"]
+    captured = {}
+
+    def invoke(uid, message, jid, request_type="lecture", extra=None):
+        captured.update({"request_type": request_type, "extra": extra})
+        return {"response": "done"}
+
+    monkeypatch.setattr(h, "_invoke_agent", invoke)
+    assert h.handler({"_worker": True, "job_id": job_id}, None)["ok"] is True
+    assert captured["request_type"] == "lecture"
+    assert captured["extra"]["lecture_brief"] == brief
+    assert table.items[job_id]["status"] == "completed"
 
 
 def test_worker_marks_failed_on_error(async_setup, monkeypatch):

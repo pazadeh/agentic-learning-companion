@@ -213,19 +213,102 @@ def _dispatch(job_id: str) -> None:
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
+def _validated_lecture_brief(raw: Any) -> Optional[dict[str, Any]]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or len(json.dumps(raw)) > 12000:
+        raise ValidationError("invalid confirmed lecture brief")
+    required_text = ("topic", "title", "learningObjective", "tone", "language")
+    for name in required_text:
+        if not isinstance(raw.get(name), str) or not raw[name].strip():
+            raise ValidationError(f"invalid lecture brief field: {name}")
+    if raw.get("knowledgeLevel") not in {"beginner", "intermediate", "advanced"}:
+        raise ValidationError("invalid lecture brief level")
+    if raw.get("depth") not in {"overview", "standard", "deep"}:
+        raise ValidationError("invalid lecture brief depth")
+    if raw.get("learningStyle") not in {"examples", "theory", "practical", "story", "step-by-step"}:
+        raise ValidationError("invalid lecture brief style")
+    duration = raw.get("durationMinutes")
+    if isinstance(duration, bool) or not isinstance(duration, int) or not 1 <= duration <= 60:
+        raise ValidationError("invalid lecture brief duration")
+    if raw.get("reinforcement") not in {"recap", "reflection", "memory-hooks", "none"}:
+        raise ValidationError("invalid lecture brief reinforcement")
+    if raw.get("sourceFreshness") not in {"current", "timeless"}:
+        raise ValidationError("invalid lecture brief source freshness")
+    for name in ("includeTopics", "excludeTopics"):
+        values = raw.get(name, [])
+        if not isinstance(values, list) or len(values) > 12 or any(
+            not isinstance(value, str) or not value.strip() or len(value) > 200
+            for value in values
+        ):
+            raise ValidationError(f"invalid lecture brief field: {name}")
+    example = raw.get("exampleContext", "")
+    if not isinstance(example, str) or len(example) > 500:
+        raise ValidationError("invalid lecture brief example")
+    return json.loads(json.dumps(raw))
+
+
+def _validated_design_context(body: dict[str, Any], message: str) -> dict[str, Any]:
+    raw = body.get("design_context") or {}
+    if not isinstance(raw, dict):
+        raise ValidationError("invalid design context")
+    request = raw.get("request", message)
+    answer = raw.get("answer", message)
+    brief = raw.get("brief") or {}
+    history = raw.get("history") or []
+    turn = raw.get("turn", 1)
+    if not isinstance(request, str) or not request.strip() or len(request) > 4000:
+        raise ValidationError("invalid design request")
+    if not isinstance(answer, str) or len(answer) > 4000:
+        raise ValidationError("invalid design answer")
+    if not isinstance(brief, dict) or len(json.dumps(brief)) > 12000:
+        raise ValidationError("invalid lecture brief")
+    if brief.get("_designFinalized") is True:
+        raise ValidationError("lecture design is already finalized")
+    if not isinstance(history, list) or len(history) > 8:
+        raise ValidationError("invalid design history")
+    if isinstance(turn, bool) or not isinstance(turn, int) or not 1 <= turn <= 3:
+        raise ValidationError("invalid design turn")
+    safe_history = []
+    for item in history:
+        if not isinstance(item, dict):
+            raise ValidationError("invalid design history")
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str) or len(content) > 1000:
+            raise ValidationError("invalid design history")
+        safe_history.append({"role": role, "content": content})
+    return {
+        "request": request.strip(),
+        "answer": answer.strip(),
+        "brief": brief,
+        "history": safe_history,
+        "turn": turn,
+    }
+
+
 def _start_job(event: dict[str, Any]) -> dict[str, Any]:
     started = time.time()
     user_id = _user_id_from_event(event)
 
     body = json.loads(event.get("body") or "{}")
     message = validate_message(body.get("message", ""))
-    action = "lecture" if body.get("action") == "lecture" else "chat"
+    action = body.get("action", "chat")
+    if action not in {"lecture", "chat", "design"}:
+        raise ValidationError("invalid job action")
+    design_context = _validated_design_context(body, message) if action == "design" else None
+    lecture_brief = _validated_lecture_brief(body.get("lecture_brief")) if action == "lecture" else None
 
     if not check_rate_limit(user_id, action):
         log_event("job_start", "rate_limited", user_id=user_id, error_code="rate_limited")
         return _response(429, {"error": "rate_limited"})
 
-    safety = check_topic_safety(message)
+    safety_text = (
+        json.dumps(design_context, sort_keys=True)
+        if design_context is not None
+        else f"{message}\n{json.dumps(lecture_brief, sort_keys=True)}" if lecture_brief is not None else message
+    )
+    safety = check_topic_safety(safety_text)
     if not safety.allowed:
         log_event("job_start", "blocked", user_id=user_id, error_code=f"content:{safety.reason}")
         return _response(
@@ -248,6 +331,8 @@ def _start_job(event: dict[str, Any]) -> dict[str, Any]:
             "progressUpdatedAt": now,
             "message": message,
             "action": action,
+            "designContext": design_context or {},
+            "lectureBrief": lecture_brief or {},
             "createdAt": now,
             "ttl": now + JOB_TTL_SECONDS,
         }
@@ -577,11 +662,18 @@ def _run_job(job_id: str) -> dict[str, Any]:
         if not AGENT_RUNTIME_ARN:
             raise RuntimeError("AGENT_RUNTIME_ARN is not configured")
 
+        is_design = item.get("action") == "design"
+        extra: dict[str, Any] = {"claim_token": claim_token}
+        if is_design:
+            extra["design_context"] = item.get("designContext", {})
+        elif item.get("lectureBrief"):
+            extra["lecture_brief"] = item["lectureBrief"]
         result = _invoke_agent(
             user_id,
             item["message"],
             job_id,
-            extra={"claim_token": claim_token},
+            request_type="lecture_design" if is_design else "lecture",
+            extra=extra,
         )
         if result.get("error"):
             raise RuntimeError(str(result["error"]))
@@ -590,8 +682,8 @@ def _run_job(job_id: str) -> dict[str, Any]:
             item,
             claim_token,
             stage="finalizing",
-            stageMessage="Finalizing your lecture",
-            stageDetail="Saving the completed result",
+            stageMessage="Finalizing your lecture design" if is_design else "Finalizing your lecture",
+            stageDetail="Saving the completed brief" if is_design else "Saving the completed result",
             stageSeq=1000,
             progress=99,
             progressUpdatedAt=int(time.time()),
@@ -601,7 +693,7 @@ def _run_job(job_id: str) -> dict[str, Any]:
             claim_token,
             status="completed",
             stage="completed",
-            stageMessage="Your lecture is ready",
+            stageMessage="Your lecture brief is ready" if is_design else "Your lecture is ready",
             stageDetail="",
             stageSeq=1001,
             progress=100,
@@ -623,7 +715,11 @@ def _run_job(job_id: str) -> dict[str, Any]:
                 item,
                 claim_token,
                 status="failed",
-                publicError="Lecture generation failed. Please try again.",
+                publicError=(
+                    "Lecture design failed. Please try again."
+                    if item.get("action") == "design"
+                    else "Lecture generation failed. Please try again."
+                ),
                 errorCode=type(exc).__name__,
                 progressUpdatedAt=int(time.time()),
             )
@@ -693,13 +789,18 @@ def _invoke_agent(
     before; series jobs add ``series_plan`` or episode metadata via ``extra``.
     """
     claim_token = str((extra or {}).get("claim_token", ""))
+    is_design = request_type == "lecture_design"
     _report_lambda_progress(
         user_id,
         job_id,
-        "personalizing",
+        "planning" if is_design else "personalizing",
         10,
-        "Personalizing your lecture",
-        "Resolving your requested depth, style, and duration",
+        "Refining your lecture brief" if is_design else "Personalizing your lecture",
+        (
+            "Applying your answers and preparing the next design choice"
+            if is_design
+            else "Resolving your requested depth, style, and duration"
+        ),
         claim_token,
     )
     personalization_context = learner_profile.resolve_personalization(user_id, message)

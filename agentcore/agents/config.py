@@ -25,6 +25,7 @@ ORCHESTRATOR_MODEL_ID = os.environ.get(
 PLANNER_MODEL_ID = os.environ.get(
     "PLANNER_MODEL_ID", "us.anthropic.claude-haiku-5-5"
 )
+DESIGN_MODEL_ID = os.environ.get("DESIGN_MODEL_ID", PLANNER_MODEL_ID)
 LECTURE_MODEL_ID = os.environ.get(
     "LECTURE_MODEL_ID", "us.anthropic.claude-sonnet-5-5"
 )

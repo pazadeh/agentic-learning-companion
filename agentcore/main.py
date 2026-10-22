@@ -18,6 +18,7 @@ from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from agents.lecture_designer import design_lecture, validate_confirmed_brief
 from agents.orchestrator import build_orchestrator
 from agents.series_planner import plan_series
 from agents import config, memory, profile_store, progress, run_context
@@ -142,6 +143,62 @@ def _personalization_context(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _design_context(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("design_context") or {}
+    if not isinstance(raw, dict):
+        raise ValidationError("Invalid design context")
+    request = raw.get("request", payload.get("message", ""))
+    answer = raw.get("answer", payload.get("message", ""))
+    brief = raw.get("brief") or {}
+    history = raw.get("history") or []
+    turn = raw.get("turn", 1)
+    if not isinstance(request, str) or not request.strip() or len(request) > 4000:
+        raise ValidationError("Invalid design request")
+    if not isinstance(answer, str) or len(answer) > 4000:
+        raise ValidationError("Invalid design answer")
+    if not isinstance(brief, dict) or len(json.dumps(brief)) > 12000:
+        raise ValidationError("Invalid lecture brief")
+    if brief.get("_designFinalized") is True:
+        raise ValidationError("Lecture design is already finalized")
+    if not isinstance(history, list) or len(history) > 8:
+        raise ValidationError("Invalid design history")
+    if isinstance(turn, bool) or not isinstance(turn, int) or not 1 <= turn <= 3:
+        raise ValidationError("Invalid design turn")
+    return {
+        "request": request.strip(),
+        "answer": answer.strip(),
+        "brief": brief,
+        "history": history,
+        "turn": turn,
+    }
+
+
+def _apply_brief_personalization(
+    personalization: dict[str, Any], brief: dict[str, Any]
+) -> dict[str, Any]:
+    if not brief:
+        return personalization
+    style = brief["learningStyle"]
+    if style == "story":
+        style = "examples"
+    elif style == "step-by-step":
+        style = "practical"
+    depth = "deep" if brief["depth"] == "deep" else "standard"
+    result = dict(personalization)
+    for name, value in (
+        ("knowledgeLevel", brief["knowledgeLevel"]),
+        ("durationMinutes", brief["durationMinutes"]),
+        ("learningStyle", style),
+        ("researchDepth", depth),
+    ):
+        result[name] = {
+            "value": value,
+            "source": "current_request",
+            "confidencePercent": 100,
+        }
+    return result
+
+
 def _tag_series_lecture(
     user_id: str,
     lecture: dict[str, Any],
@@ -206,7 +263,7 @@ def agent_invocation(payload, context):
     request_type = payload.get("request_type") or "lecture"
 
     try:
-        if request_type not in {"lecture", "series_plan"}:
+        if request_type not in {"lecture", "lecture_design", "series_plan"}:
             raise ValidationError("Invalid request type")
         user_id = validate_user_id(payload.get("user_id", ""))
         job_id = validate_job_id(payload.get("job_id", ""))
@@ -215,7 +272,16 @@ def agent_invocation(payload, context):
             claim_token = validate_job_id(claim_token)
         message = validate_message(payload.get("message", ""))
         personalization_context = _personalization_context(payload)
+        lecture_brief = (
+            validate_confirmed_brief(payload.get("lecture_brief"), personalization_context)
+            if request_type == "lecture" and payload.get("lecture_brief")
+            else {}
+        )
+        personalization_context = _apply_brief_personalization(
+            personalization_context, lecture_brief
+        )
         series_context = _series_context(payload) if request_type == "lecture" else None
+        design_context = _design_context(payload) if request_type == "lecture_design" else None
     except ValidationError as exc:
         log_event("agent_invoke", "invalid_input", error_code="ValidationError")
         return {"error": "invalid_input", "message": str(exc)}
@@ -223,12 +289,17 @@ def agent_invocation(payload, context):
     progress.bind(user_id=user_id, job_id=job_id, claim_token=claim_token)
     progress.report("validating", 15, "Validating your request")
 
-    rate_action = "series_plan" if request_type == "series_plan" else "lecture"
+    rate_action = request_type if request_type in {"series_plan", "lecture_design"} else "lecture"
     if not check_rate_limit(user_id, rate_action):
         log_event("agent_invoke", "rate_limited", user_id=user_id, request_id=request_id)
         return {"error": "rate_limited"}
 
-    safety = check_topic_safety(message)
+    safety_text = (
+        json.dumps(design_context, sort_keys=True)
+        if design_context is not None
+        else f"{message}\n{json.dumps(lecture_brief, sort_keys=True)}" if lecture_brief else message
+    )
+    safety = check_topic_safety(safety_text)
     if not safety.allowed:
         log_event(
             "agent_invoke",
@@ -249,7 +320,22 @@ def agent_invocation(payload, context):
     memory_context = memory.retrieve_user_memories(user_id, message)
 
     try:
-        if request_type == "series_plan":
+        if request_type == "lecture_design":
+            progress.report("planning", 35, "Designing your lecture")
+            assert design_context is not None
+            with _agent_lock:
+                design = design_lecture(
+                    request=design_context["request"],
+                    answer=design_context["answer"],
+                    current_brief=design_context["brief"],
+                    history=design_context["history"],
+                    turn=design_context["turn"],
+                    personalization=personalization_context,
+                )
+            progress.report("planning", 90, "Lecture brief updated")
+            response_text = design["message"]
+            lecture = {}
+        elif request_type == "series_plan":
             episode_count = payload.get("episode_count")
             duration_minutes = payload.get("duration_minutes")
             progress.report("planning", 30, "Designing the lecture series")
@@ -276,11 +362,13 @@ def agent_invocation(payload, context):
         else:
             with _agent_lock:
                 run_context.reset()
+                run_context.set_lecture_brief(lecture_brief)
                 run_context.set_lecture(personalizationUsed=personalization_context)
                 agent = build_orchestrator(
                     user_id,
                     memory_context=memory_context,
                     personalization_context=personalization_context,
+                    lecture_brief=lecture_brief,
                 )
                 result = agent(message)
                 lecture = run_context.get_lecture()
@@ -310,6 +398,8 @@ def agent_invocation(payload, context):
 
     if request_type == "series_plan":
         memory_text = f"Planned a {len(plan['episodes'])}-part lecture series: {plan['title']}"
+    elif request_type == "lecture_design":
+        memory_text = "Refined a lecture brief without generating the lecture."
     else:
         memory_text = response_text
     progress.report("finalizing", 98, "Finalizing your result")
@@ -322,6 +412,8 @@ def agent_invocation(payload, context):
 
     if request_type == "series_plan":
         return {"response": response_text, "plan": plan}
+    if request_type == "lecture_design":
+        return {"response": response_text, "design": design}
 
     response: dict[str, Any] = {"response": response_text}
     if lecture.get("s3Key"):
