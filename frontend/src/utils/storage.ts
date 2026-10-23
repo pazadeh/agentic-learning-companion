@@ -32,4 +32,35 @@ export const STORAGE_KEYS = {
   lectures: 'alc.lectures',
   profile: 'alc.profile',
   drivingMode: 'alc.drivingMode',
+  theme: 'alc.theme',
 } as const;
+
+/** Per-user keys keep shared-browser state isolated between Cognito accounts. */
+export type UserScopedKey =
+  | 'create'
+  | 'createLease'
+  | 'favorites'
+  | 'nowPlaying'
+  | 'onboarded'
+  | 'positions'
+  | 'profileCache'
+  | 'speed';
+
+export function userKey(sub: string, name: UserScopedKey): string {
+  return `alc.${name}.${sub || 'anonymous'}`;
+}
+
+/** Remove every locally cached value that belongs to one user. */
+export function removeUserItems(sub: string): void {
+  if (!sub) return;
+  try {
+    const doomed: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith('alc.') && key.endsWith(`.${sub}`)) doomed.push(key);
+    }
+    doomed.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Ignore unavailable storage.
+  }
+}

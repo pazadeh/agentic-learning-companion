@@ -12,7 +12,11 @@ limiting, encryption everywhere).
 
 ## Highlights
 
-- Guided **Design with AI** conversations with quick-choice buttons, typed alternatives, and explicit confirmation
+- Three clear creation modes: **Quick lecture**, **Guided lecture** (quick-choice buttons, typed alternatives, an editable final brief, explicit confirmation), and **Plan a series**
+- A global player that keeps playing across Create · My series · Library · You, with a mini-player, follow-along transcript, resume positions, and lock-screen controls
+- Durable work: conversations, guided briefs, and in-flight generation survive navigation and reloads, with completion notifications
+- Library search, sort, filters, and one-tap resume; downloads with progress, cancel, and undo
+- First-use onboarding with an explicit personalization choice, dark mode, and accessibility foundations (focus states, zoom, readable type)
 - Single personalized lectures and editable 2–8 episode lecture series
 - Multi-agent research, long-form writing, Nova 2.5 Sonic narration, and durable orchestration
 - Live, truthful generation stages from profile loading through source research, writing,

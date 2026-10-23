@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { ErrorBanner } from '../components/common/ErrorBanner';
+import { Icon } from '../components/common/Icon';
 import {
   confirmNewPassword,
   confirmSignUp,
@@ -96,8 +97,23 @@ export function LoginPage() {
   return (
     <div className="login">
       <div className="login__card">
+        <span className="login__logo" aria-hidden="true">
+          <Icon name="sparkle" size={26} />
+        </span>
         <h1 className="login__title">Audio Learning Companion</h1>
-        {info && <p className="login__info">{info}</p>}
+        <p className="login__tagline">Personalized audio lessons on any topic.</p>
+        <h2 className="login__view-title">
+          {view === 'signin'
+            ? 'Sign in'
+            : view === 'signup'
+              ? 'Create your account'
+              : view === 'confirm-email'
+                ? 'Confirm your email'
+                : view === 'forgot-password'
+                  ? 'Reset your password'
+                  : 'Choose a new password'}
+        </h2>
+        {info && <p className="login__info" role="status">{info}</p>}
         <ErrorBanner message={error} onDismiss={() => setError('')} />
 
         {view === 'signin' && (
@@ -131,6 +147,9 @@ export function LoginPage() {
           </form>
         )}
 
+        {view === 'confirm-email' && (
+          <p className="login__hint">We sent a 6-digit code to {email || 'your email'}.</p>
+        )}
         {view === 'confirm-email' && (
           <form onSubmit={onConfirmEmail} className="login__form">
             <CodeField value={code} onChange={setCode} />
@@ -175,11 +194,31 @@ function EmailField({ value, onChange }: { value: string; onChange: (value: stri
 }
 
 function PasswordField({ value, onChange, autoComplete, label = 'Password' }: { value: string; onChange: (value: string) => void; autoComplete: string; label?: string }) {
+  const [visible, setVisible] = useState(false);
+  const id = useId();
   return (
-    <label className="field">
-      <span>{label}</span>
-      <input type="password" autoComplete={autoComplete} required value={value} onChange={(event) => onChange(event.target.value)} />
-    </label>
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <span className="password-field">
+        <input
+          id={id}
+          type={visible ? 'text' : 'password'}
+          autoComplete={autoComplete}
+          required
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button
+          type="button"
+          className="password-field__toggle"
+          onClick={() => setVisible((current) => !current)}
+          aria-label={visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+          aria-pressed={visible}
+        >
+          {visible ? 'Hide' : 'Show'}
+        </button>
+      </span>
+    </div>
   );
 }
 

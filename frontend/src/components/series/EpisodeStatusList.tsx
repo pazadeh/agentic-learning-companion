@@ -1,4 +1,5 @@
 import type { GenerationStage, SeriesEpisode, SeriesEpisodeStatus } from '../../types';
+import { Icon } from '../common/Icon';
 
 interface EpisodeStatusListProps {
   episodes: SeriesEpisode[];
@@ -10,13 +11,13 @@ interface EpisodeStatusListProps {
 
 const STATUS_LABELS: Record<SeriesEpisodeStatus, string> = {
   planned: 'Planned',
-  pending: 'Pending',
+  pending: 'Waiting',
   queued: 'Queued',
   researching: 'Researching',
   writing: 'Writing',
   synthesizing: 'Creating audio',
   processing: 'Processing',
-  completed: 'Completed',
+  completed: 'Ready',
   failed: 'Failed',
 };
 
@@ -50,7 +51,7 @@ export function EpisodeStatusList({
   onRetry,
 }: EpisodeStatusListProps) {
   if (episodes.length === 0) {
-    return <p className="series__empty">Episodes will appear when the plan is ready.</p>;
+    return <p className="empty-state">Episodes will appear when the plan is ready.</p>;
   }
 
   const orderedEpisodes = [...episodes].sort((a, b) => a.order - b.order);
@@ -61,21 +62,19 @@ export function EpisodeStatusList({
         const progress = boundedProgress(episode.progress);
         const canPlay = episode.status === 'completed' && Boolean(episode.s3Key);
         const isRetrying = retryingEpisodeId === episode.episodeId;
-        const canRetry = episode.retryable;
+        const isActive = activeEpisodeId === episode.episodeId;
+        const label = episode.stage && statusIsActive(episode.status)
+          ? STAGE_LABELS[episode.stage] ?? STATUS_LABELS[episode.status]
+          : STATUS_LABELS[episode.status];
         return (
-          <li
-            key={episode.episodeId}
-            className={`episode-status ${activeEpisodeId === episode.episodeId ? 'is-active' : ''}`}
-          >
+          <li key={episode.episodeId} className={`episode-status ${isActive ? 'is-active' : ''}`}>
             <div className="episode-status__number" aria-hidden="true">
               {episode.order}
             </div>
             <div className="episode-status__body">
               <div className="episode-status__heading">
                 <strong>{episode.title}</strong>
-                <span className={`status-pill status-pill--${episode.status}`}>
-                  {episode.stage ? STAGE_LABELS[episode.stage] ?? STATUS_LABELS[episode.status] : STATUS_LABELS[episode.status]}
-                </span>
+                <span className={`status-pill status-pill--${episode.status}`}>{label}</span>
               </div>
               {episode.summary && <p>{episode.summary}</p>}
               {episode.stageDetail && statusIsActive(episode.status) && (
@@ -83,9 +82,9 @@ export function EpisodeStatusList({
               )}
               <span className="episode-status__meta">{episode.durationMinutes} min</span>
 
-              {episode.status !== 'planned' && episode.status !== 'completed' && (
+              {statusIsActive(episode.status) && (
                 <div
-                  className="episode-status__progress"
+                  className="progress-line progress-line--labeled"
                   role="progressbar"
                   aria-label={`${episode.title} progress`}
                   aria-valuemin={0}
@@ -93,7 +92,6 @@ export function EpisodeStatusList({
                   aria-valuenow={progress}
                 >
                   <span style={{ width: `${progress}%` }} />
-                  <small>{progress}%</small>
                 </div>
               )}
 
@@ -101,22 +99,24 @@ export function EpisodeStatusList({
 
               <div className="episode-status__actions">
                 {canPlay && (
-                  <button type="button" className="btn btn--ghost" onClick={() => onPlay(episode)}>
-                    {activeEpisodeId === episode.episodeId ? 'Playing here' : 'Play episode'}
-                  </button>
-                )}
-                {canRetry && (
                   <button
                     type="button"
-                    className="btn btn--ghost"
+                    className={`btn btn--small ${isActive ? 'btn--ghost' : 'btn--primary'}`}
+                    onClick={() => onPlay(episode)}
+                  >
+                    <Icon name={isActive ? 'expand' : 'play'} size={16} />
+                    {isActive ? 'Now playing' : 'Play episode'}
+                  </button>
+                )}
+                {episode.retryable && (
+                  <button
+                    type="button"
+                    className="btn btn--small btn--ghost"
                     onClick={() => onRetry(episode)}
                     disabled={isRetrying}
                   >
-                    {isRetrying
-                      ? 'Retrying…'
-                      : episode.status === 'failed'
-                        ? 'Retry'
-                        : 'Retry stalled episode'}
+                    <Icon name="refresh" size={16} />
+                    {isRetrying ? 'Retrying…' : episode.status === 'failed' ? 'Retry' : 'Retry stalled episode'}
                   </button>
                 )}
               </div>

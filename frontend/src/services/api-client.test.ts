@@ -197,3 +197,13 @@ describe('series lifecycle', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('pollJobUntilDone cancellation', () => {
+  it('stops polling once its signal is aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(pollJobUntilDone('j1', undefined, 0, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+});

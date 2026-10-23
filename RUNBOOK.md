@@ -130,15 +130,23 @@ it up immediately.
   fallback appears repeatedly.
 - **Lecture starts too early**: only the final **Generate lecture** action may submit an
   `action=lecture` job. Design turns use `action=design` and the tool-free design agent.
-- **Custom preference**: the composer remains active under every question and sends typed
-  text through the same refinement path as button values.
+- **Custom preference**: while AI turns remain, the composer sends typed text through the
+  same refinement path as button values. After the third turn the brief is still editable
+  directly (**Edit brief**); edits are validated client-side against the same contract the
+  job Lambda enforces, so an edited brief is never rejected for shape.
+- **Design or generation “disappeared”**: active work is stored per user in
+  `localStorage` (`alc.create.<sub>`) and polling resumes on reload. The header shows a
+  progress pill on every page. Clearing site data or **You → Clear data on this device**
+  removes the local copy; the backend job still completes and the lecture appears in Library.
 
 ## Troubleshooting offline downloads
 
 - **Save offline is disabled**: the browser reports offline; reconnect before fetching
   the owned transcript and audio.
 - **Not enough storage**: Nova WAV uses about 2.9 MB per minute. Remove other offline
-  copies from History or free browser storage, then retry. The cloud lecture is unaffected.
+  copies from Library or free browser storage, then retry. The cloud lecture is unaffected.
+- **Removed a download by mistake**: removal is deferred for a few seconds behind an
+  **Undo** toast; after that only the local copy is gone and the lecture can be saved again.
 - **Legacy lecture says audio only**: lectures created before deterministic transcript
   persistence have no matching text; the app never regenerates or fabricates one.
 - **Saved lecture is missing after sign-in with another account**: downloads are scoped

@@ -1,30 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { EpisodeStatusList } from '../components/series/EpisodeStatusList';
 import { SeriesPlanEditor } from '../components/series/SeriesPlanEditor';
-import { ErrorBanner } from '../components/common/ErrorBanner';
+import { ErrorBanner, type ErrorAction } from '../components/common/ErrorBanner';
+import { Icon } from '../components/common/Icon';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
-import { AudioPlayer } from '../components/audio/AudioPlayer';
+import { TopicArt } from '../components/common/TopicArt';
 import { useAppState } from '../contexts/AppStateContext';
+import { useCreate } from '../contexts/CreateContext';
+import { usePlayer } from '../contexts/PlayerContext';
 import {
   ApiError,
   approveSeries,
+  createSeriesDraft,
+  getLecture,
   getSeries,
   listSeries,
   pollSeriesUntilSettled,
-  refreshAudioUrl,
   retrySeriesEpisode,
   saveSeriesPlan,
 } from '../services/api-client';
 import { formatDate } from '../utils/format';
-import { usePlaybackTracking } from '../hooks/usePlaybackTracking';
-import type {
-  Lecture,
-  SeriesDetail,
-  SeriesEpisode,
-  SeriesPlan,
-  SeriesStatus,
-  SeriesSummary,
-} from '../types';
+import type { Lecture, SeriesDetail, SeriesEpisode, SeriesPlan, SeriesStatus, SeriesSummary } from '../types';
 
 const STATUS_LABELS: Record<SeriesStatus, string> = {
   draft: 'Draft',
@@ -33,16 +29,22 @@ const STATUS_LABELS: Record<SeriesStatus, string> = {
   generating: 'Generating',
   attention: 'Needs attention',
   completed: 'Completed',
-  failed: 'Failed',
+  failed: 'Planning failed',
 };
 
-function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiError) return error.message;
-  return fallback;
+interface PageError {
+  message: string;
+  actions?: ErrorAction[];
+}
+
+function messageOf(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback;
 }
 
 export function SeriesPage() {
-  const { state, dispatch } = useAppState();
+  const { state, dispatch, navigate } = useAppState();
+  const create = useCreate();
+  const player = usePlayer();
   const selectedSeriesId = state.selectedSeriesId;
   const [seriesList, setSeriesList] = useState<SeriesSummary[]>([]);
   const [detail, setDetail] = useState<SeriesDetail | null>(null);
@@ -52,10 +54,15 @@ export function SeriesPage() {
   const [isPolling, setIsPolling] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
+  const [isReplanning, setIsReplanning] = useState(false);
   const [retryingEpisodeId, setRetryingEpisodeId] = useState<string | null>(null);
-  const [activeEpisodeId, setActiveEpisodeId] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const trackPlayback = usePlaybackTracking(state.currentLecture?.lectureId);
+  const [error, setError] = useState<PageError | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const startPlanning = () => {
+    create.setMode('series');
+    navigate({ page: 'create' });
+  };
 
   const refreshList = useCallback(async (signal?: AbortSignal) => {
     setIsLoadingList(true);
@@ -64,7 +71,10 @@ export function SeriesPage() {
       setSeriesList(response.series);
     } catch (err) {
       if (!(err instanceof DOMException && err.name === 'AbortError')) {
-        setError(errorMessage(err, 'Could not load your lecture series.'));
+        setError({
+          message: messageOf(err, 'Your lecture series could not be loaded.'),
+          actions: [{ label: 'Try again', onClick: () => void refreshList() }],
+        });
       }
     } finally {
       if (!signal?.aborted) setIsLoadingList(false);
@@ -78,16 +88,14 @@ export function SeriesPage() {
   }, [refreshList]);
 
   useEffect(() => {
-    setActiveEpisodeId(null);
     if (!selectedSeriesId) {
       setDetail(null);
       setEditablePlan(null);
       return;
     }
-
     const controller = new AbortController();
     setIsLoadingDetail(true);
-    setError('');
+    setError(null);
     void getSeries(selectedSeriesId, controller.signal)
       .then((next) => {
         setDetail(next);
@@ -95,28 +103,30 @@ export function SeriesPage() {
       })
       .catch((err: unknown) => {
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
-          setError(errorMessage(err, 'Could not load this lecture series.'));
+          setError({
+            message: messageOf(err, 'This lecture series could not be loaded.'),
+            actions: [{ label: 'Try again', onClick: () => setReloadToken((value) => value + 1) }],
+          });
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setIsLoadingDetail(false);
       });
     return () => controller.abort();
-  }, [selectedSeriesId]);
+  }, [reloadToken, selectedSeriesId]);
 
   useEffect(() => {
     if (!selectedSeriesId || !detail || !['planning', 'generating'].includes(detail.status)) return;
-
     const controller = new AbortController();
     const planning = detail.status === 'planning';
     setIsPolling(true);
     void pollSeriesUntilSettled(selectedSeriesId, {
       signal: controller.signal,
       pollWhile: planning ? ['planning'] : ['generating'],
-      maxAttempts: planning ? 900 : undefined, // planning is bounded to ~30 minutes
+      maxAttempts: planning ? 900 : undefined,
       onUpdate: (next) => {
         setDetail(next);
-        if (next.plan) setEditablePlan(next.plan);
+        if (next.plan) setEditablePlan((current) => current ?? next.plan);
       },
     })
       .then((next) => {
@@ -126,16 +136,17 @@ export function SeriesPage() {
       })
       .catch((err: unknown) => {
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
-          setError(errorMessage(err, 'Series updates stopped. Refresh to try again.'));
+          setError({
+            message: messageOf(err, 'Live updates stopped.'),
+            actions: [{ label: 'Refresh', onClick: () => setReloadToken((value) => value + 1) }],
+          });
         }
       })
       .finally(() => {
         if (!controller.signal.aborted) setIsPolling(false);
       });
-
     return () => controller.abort();
-    // Restart polling only when the status changes. Depending on `detail` itself
-    // would abort and restart the poll on every update, hammering the API.
+    // Restart polling only when the status changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail?.status, refreshList, selectedSeriesId]);
 
@@ -144,63 +155,85 @@ export function SeriesPage() {
     return JSON.stringify(detail.plan) !== JSON.stringify(editablePlan);
   }, [detail?.plan, editablePlan]);
 
-  const selectSeries = (seriesId: string) => {
-    dispatch({ type: 'SET_SELECTED_SERIES', seriesId });
-  };
+  useEffect(() => {
+    dispatch({ type: 'SET_UNSAVED', value: isDirty });
+    return () => dispatch({ type: 'SET_UNSAVED', value: false });
+  }, [dispatch, isDirty]);
+
+  const conflictError = (): PageError => ({
+    message: 'This plan changed somewhere else. Reload to see the latest version before saving again.',
+    actions: [{ label: 'Reload plan', onClick: () => setReloadToken((value) => value + 1) }],
+  });
 
   const showList = () => {
-    dispatch({ type: 'SET_SELECTED_SERIES', seriesId: null });
-    setError('');
+    // Guarded: an edited, unsaved plan asks before it is discarded.
+    navigate({ page: 'series', seriesId: null });
+    setError(null);
     void refreshList();
   };
 
-  const savePlan = async (plan: SeriesPlan, revision: number) => {
-    if (!selectedSeriesId) return;
+  const savePlan = async (plan: SeriesPlan): Promise<SeriesDetail | null> => {
+    if (!selectedSeriesId || !detail) return null;
     setIsSaving(true);
-    setError('');
+    setError(null);
     try {
-      const next = await saveSeriesPlan(selectedSeriesId, plan, revision);
+      const next = await saveSeriesPlan(selectedSeriesId, plan, detail.revision);
       setDetail(next);
       setEditablePlan(next.plan);
       void refreshList();
+      return next;
     } catch (err) {
-      const message =
-        err instanceof ApiError && err.status === 409
-          ? 'This plan has a newer revision. Reload the series before saving again.'
-          : errorMessage(err, 'Could not save the plan.');
-      setError(message);
+      setError(err instanceof ApiError && err.status === 409 ? conflictError() : { message: messageOf(err, 'The plan could not be saved. Your edits are still here.') });
+      return null;
     } finally {
       setIsSaving(false);
     }
   };
 
-  const approve = async (revision: number) => {
-    if (!selectedSeriesId || isDirty) return;
+  const generate = async (plan: SeriesPlan) => {
+    if (!selectedSeriesId || !detail) return;
+    const saved = isDirty ? await savePlan(plan) : detail;
+    if (!saved) return;
     setIsApproving(true);
-    setError('');
+    setError(null);
     try {
-      const next = await approveSeries(selectedSeriesId, revision);
+      const next = await approveSeries(selectedSeriesId, saved.revision);
       setDetail(next);
       setEditablePlan(next.plan);
       void refreshList();
     } catch (err) {
-      setError(errorMessage(err, 'Could not approve this series.'));
+      setError(err instanceof ApiError && err.status === 409 ? conflictError() : { message: messageOf(err, 'Generation could not start. Your plan is saved.') });
     } finally {
       setIsApproving(false);
+    }
+  };
+
+  const replan = async () => {
+    if (!detail) return;
+    setIsReplanning(true);
+    setError(null);
+    try {
+      const draft = await createSeriesDraft(detail.prompt || detail.topic);
+      navigate({ page: 'series', seriesId: draft.seriesId });
+      void refreshList();
+    } catch (err) {
+      setError({ message: messageOf(err, 'Planning could not restart.'), actions: [{ label: 'Try again', onClick: () => void replan() }] });
+    } finally {
+      setIsReplanning(false);
     }
   };
 
   const retryEpisode = async (episode: SeriesEpisode) => {
     if (!selectedSeriesId) return;
     setRetryingEpisodeId(episode.episodeId);
-    setError('');
+    setError(null);
     try {
       const next = await retrySeriesEpisode(selectedSeriesId, episode.episodeId);
       setDetail(next);
       setEditablePlan(next.plan);
       void refreshList();
     } catch (err) {
-      setError(errorMessage(err, `Could not retry “${episode.title}”.`));
+      setError({ message: messageOf(err, `“${episode.title}” could not be retried.`) });
     } finally {
       setRetryingEpisodeId(null);
     }
@@ -208,63 +241,86 @@ export function SeriesPage() {
 
   const playEpisode = async (episode: SeriesEpisode) => {
     if (!episode.s3Key || !detail) return;
-    setError('');
-    try {
-      const { url } = await refreshAudioUrl(episode.s3Key);
-      const lecture: Lecture = {
-        lectureId: episode.lectureId ?? episode.episodeId,
-        title: episode.title,
-        topic: detail.topic,
-        s3Key: episode.s3Key,
-        durationMinutes: episode.durationMinutes,
-        createdAt: detail.updatedAt,
-      };
-      dispatch({ type: 'SET_LECTURE', lecture });
-      dispatch({ type: 'SET_AUDIO_URL', url });
-      setActiveEpisodeId(episode.episodeId);
-    } catch (err) {
-      setError(errorMessage(err, `Could not play “${episode.title}”.`));
+    if (player.lecture?.lectureId === (episode.lectureId ?? `episode:${episode.episodeId}`)) {
+      player.setExpanded(true);
+      return;
     }
+    let lecture: Lecture = {
+      // Without a lecture record the audio still plays, but it is never reported or
+      // looked up under an id the lectures API doesn't own.
+      lectureId: episode.lectureId ?? `episode:${episode.episodeId}`,
+      untracked: !episode.lectureId,
+      title: episode.title,
+      topic: detail.title || detail.topic,
+      s3Key: episode.s3Key,
+      durationMinutes: episode.durationMinutes,
+      createdAt: detail.updatedAt,
+      seriesId: detail.seriesId,
+      episodeId: episode.episodeId,
+      episodeOrder: episode.order,
+    };
+    if (episode.lectureId) {
+      try {
+        const full = await getLecture(episode.lectureId);
+        lecture = { ...lecture, ...full, topic: lecture.topic };
+      } catch {
+        // Playback still works; the transcript loads if available.
+      }
+    }
+    await player.playLecture(lecture, { autoplay: true });
   };
 
   if (!selectedSeriesId) {
     return (
-      <div className="series">
-        <div className="series__page-heading">
+      <div className="page series">
+        <div className="page__heading">
           <div>
-            <h2>Lecture series</h2>
-            <p>Review plans, follow generation, and listen episode by episode.</p>
+            <h2>My series</h2>
+            <p>Multi-part learning you review before it’s generated, then listen to episode by episode.</p>
           </div>
+          <button type="button" className="btn btn--primary btn--small" onClick={startPlanning}>
+            <Icon name="plus" size={16} /> Plan a series
+          </button>
         </div>
-        <ErrorBanner message={error} onDismiss={() => setError('')} />
+        {error && <ErrorBanner message={error.message} actions={error.actions} onDismiss={() => setError(null)} />}
         {isLoadingList ? (
           <LoadingSpinner label="Loading your series…" />
         ) : seriesList.length === 0 ? (
-          <p className="series__empty">No series yet. Choose Series in Chat to create a draft.</p>
+          <div className="empty-state">
+            <Icon name="layers" size={36} className="empty-state__icon" />
+            <p>No series yet. Describe a subject and we’ll draft a 2–8 episode plan for you to edit and approve.</p>
+            <button type="button" className="btn btn--primary" onClick={startPlanning}>
+              Plan your first series
+            </button>
+          </div>
         ) : (
           <ul className="series-list">
-            {seriesList.map((item) => (
-              <li key={item.seriesId}>
-                <button type="button" className="series-card" onClick={() => selectSeries(item.seriesId)}>
-                  <span className="series-card__heading">
-                    <strong>{item.title || item.topic}</strong>
-                    <span className={`status-pill status-pill--${item.status}`}>
-                      {STATUS_LABELS[item.status]}
+            {seriesList.map((item) => {
+              const percent = item.episodeCount > 0 ? (item.completedEpisodeCount / item.episodeCount) * 100 : 0;
+              return (
+                <li key={item.seriesId}>
+                  <button
+                    type="button"
+                    className="series-card"
+                    onClick={() => navigate({ page: 'series', seriesId: item.seriesId })}
+                  >
+                    <TopicArt text={item.title || item.topic} />
+                    <span className="series-card__body">
+                      <span className="series-card__heading">
+                        <strong>{item.title || item.topic}</strong>
+                        <span className={`status-pill status-pill--${item.status}`}>{STATUS_LABELS[item.status]}</span>
+                      </span>
+                      <span className="series-card__meta">
+                        {item.completedEpisodeCount} of {item.episodeCount} episodes ready · Updated {formatDate(item.updatedAt)}
+                      </span>
+                      <span className="progress-line" aria-hidden="true">
+                        <span style={{ width: `${percent}%` }} />
+                      </span>
                     </span>
-                  </span>
-                  <span className="series-card__meta">
-                    {item.completedEpisodeCount}/{item.episodeCount} episodes · Updated {formatDate(item.updatedAt)}
-                  </span>
-                  <span className="episode-status__progress" aria-hidden="true">
-                    <span
-                      style={{
-                        width: `${item.episodeCount > 0 ? (item.completedEpisodeCount / item.episodeCount) * 100 : 0}%`,
-                      }}
-                    />
-                  </span>
-                </button>
-              </li>
-            ))}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -273,106 +329,98 @@ export function SeriesPage() {
 
   if (isLoadingDetail || !detail) {
     return (
-      <div className="series series--detail">
-        <button type="button" className="link series__back" onClick={showList}>← All series</button>
-        <ErrorBanner message={error} onDismiss={() => setError('')} />
+      <div className="page series">
+        <button type="button" className="link back-link" onClick={showList}>← All series</button>
+        {error && <ErrorBanner message={error.message} actions={error.actions} onDismiss={() => setError(null)} />}
         {isLoadingDetail && <LoadingSpinner label="Loading series…" />}
       </div>
     );
   }
 
-  const showsPlan =
-    editablePlan && ['draft', 'ready_for_approval'].includes(detail.status);
+  const showsPlan = editablePlan && ['draft', 'ready_for_approval'].includes(detail.status);
   const showsEpisodes = ['generating', 'attention', 'completed'].includes(detail.status);
+  const playingEpisodeId = player.lecture?.seriesId === detail.seriesId ? player.lecture.episodeId ?? null : null;
 
   return (
-    <div className="series series--detail">
-      <button type="button" className="link series__back" onClick={showList}>← All series</button>
-      <div className="series__page-heading">
+    <div className="page series">
+      <button type="button" className="link back-link" onClick={showList}>← All series</button>
+      <div className="page__heading">
         <div>
           <h2>{detail.title || detail.topic}</h2>
           <p>{detail.description || detail.topic}</p>
         </div>
-        <span className={`status-pill status-pill--${detail.status}`}>
-          {STATUS_LABELS[detail.status]}
-        </span>
+        <span className={`status-pill status-pill--${detail.status}`}>{STATUS_LABELS[detail.status]}</span>
       </div>
 
-      <ErrorBanner message={error} onDismiss={() => setError('')} />
+      {error && <ErrorBanner message={error.message} actions={error.actions} onDismiss={() => setError(null)} />}
 
       {detail.status === 'planning' && (
-        <div className="series-stage" aria-live="polite">
+        <div className="stage-card" aria-live="polite">
           <LoadingSpinner label="Planning 2–8 focused episodes…" />
-          <p>You can leave this page. Your draft will keep planning.</p>
+          <p>You can leave this page. Planning continues and the draft will be waiting here.</p>
         </div>
       )}
 
-      {showsPlan && (
+      {showsPlan && editablePlan && (
         <SeriesPlanEditor
           plan={editablePlan}
-          revision={detail.revision}
           isDirty={isDirty}
           isSaving={isSaving}
           isApproving={isApproving}
           onChange={setEditablePlan}
-          onSave={(plan, revision) => void savePlan(plan, revision)}
-          onApprove={(revision) => void approve(revision)}
+          onSave={(plan) => void savePlan(plan)}
+          onGenerate={(plan) => void generate(plan)}
         />
       )}
 
       {detail.status === 'draft' && !editablePlan && (
-        <div className="series-stage">
-          <p>This draft does not have a plan yet. Refresh once planning begins.</p>
+        <div className="stage-card">
+          <p>This draft doesn’t have a plan yet.</p>
+          <button type="button" className="btn btn--ghost" onClick={() => setReloadToken((value) => value + 1)}>
+            <Icon name="refresh" size={16} /> Check again
+          </button>
         </div>
       )}
 
       {detail.status === 'generating' && (
-        <div className="series-stage series-stage--compact" aria-live="polite">
-          <strong>Generating episodes</strong>
-          <span>{isPolling ? ' Updates refresh automatically.' : ' Checking status…'}</span>
+        <div className="stage-card stage-card--compact" aria-live="polite">
+          <strong>Generating episodes one at a time</strong>
+          <span>{isPolling ? 'Updates appear automatically. Ready episodes can be played now.' : 'Checking status…'}</span>
         </div>
       )}
 
       {detail.status === 'attention' && (
-        <div className="series-stage series-stage--attention">
+        <div className="stage-card stage-card--attention">
           <strong>Some episodes need attention.</strong>
-          <span>Completed episodes are playable. Retry only the failed episodes.</span>
+          <span>Ready episodes are playable. Retry only the ones that failed.</span>
         </div>
       )}
 
       {detail.status === 'failed' && (
-        <div className="series-stage series-stage--attention">
-          <strong>Planning this series failed.</strong>
-          <span>Nothing was generated. Create a new series draft from Chat to try again.</span>
+        <div className="stage-card stage-card--attention">
+          <strong>Planning this series didn’t finish.</strong>
+          <span>No episodes were generated. You can plan it again with the same request.</span>
+          <button type="button" className="btn btn--primary" onClick={() => void replan()} disabled={isReplanning}>
+            <Icon name="refresh" size={16} /> {isReplanning ? 'Starting…' : 'Try planning again'}
+          </button>
         </div>
       )}
 
       {detail.status === 'completed' && (
-        <div className="series-stage series-stage--complete">
+        <div className="stage-card stage-card--complete">
           <strong>Your series is complete.</strong>
-          <span>Choose any episode to listen.</span>
+          <span>Choose any episode to listen. Every episode is also in your Library.</span>
         </div>
       )}
 
       {showsEpisodes && (
         <EpisodeStatusList
           episodes={detail.episodes}
-          activeEpisodeId={activeEpisodeId}
+          activeEpisodeId={playingEpisodeId}
           retryingEpisodeId={retryingEpisodeId}
           onPlay={(episode) => void playEpisode(episode)}
           onRetry={(episode) => void retryEpisode(episode)}
         />
-      )}
-
-      {activeEpisodeId && state.audioUrl && (
-        <section className="series__audio" aria-label="Series episode audio">
-          <AudioPlayer
-            src={state.audioUrl}
-            drivingMode={state.drivingMode}
-            title={state.currentLecture?.title}
-            onPlaybackUpdate={trackPlayback}
-          />
-        </section>
       )}
     </div>
   );
