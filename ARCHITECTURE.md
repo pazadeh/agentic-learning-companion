@@ -266,7 +266,7 @@ using just the DynamoDB profile.
 
 ## 3. Guided lecture design
 
-`Design with AI` uses the normal authenticated asynchronous job channel with
+**Guided lecture** (formerly “Design with AI”) uses the normal authenticated asynchronous job channel with
 `action=design` / `request_type=lecture_design`. Each turn carries only the original
 request, current validated brief, up to six short conversation messages, and a turn
 number from 1–3. The tool-free design agent returns one concise message, an updated
@@ -403,10 +403,10 @@ stateDiagram-v2
 - **Episode requests** include the series title, the episode's focus, and the full
   outline so each lecture stays in scope and links to its neighbors. AgentCore tags
   the saved lecture row with `seriesId`, `episodeId`, and `episodeOrder`.
-- **Suggestions are advisory**: Chat has an explicit Lecture/Series choice. An explicit
-  multi-lecture request in Lecture mode asks before doing anything. After a broad
-  topic (book, history, deep dive) produces one lecture, Chat offers a series. The
-  app never converts a request on its own.
+- **Suggestions are advisory**: Create has an explicit Quick lecture / Guided lecture /
+  Plan a series choice. An explicit multi-lecture request in Quick mode asks before
+  doing anything. After a broad topic (book, history, deep dive) produces one lecture,
+  Create offers a series. The app never converts a request on its own.
 
 Step Functions is intentionally not used yet. The API and schema keep the runner
 replaceable, and the current agent loop could later move to AgentCore Harness
@@ -423,7 +423,7 @@ under `[Cognito sub, lectureId]`. Presigned URLs and bearer tokens are never sto
 
 Playback resolves IndexedDB first and uses a `blob:` URL, so saved lectures remain
 readable and playable without API or S3 access. Removing a download deletes only the
-local copy; the cloud lecture remains in History. Legacy lectures without persisted
+local copy; the cloud lecture remains in Library. Legacy lectures without persisted
 scripts are supported as audio-only downloads. Nova WAV files are large (~2.9 MB per
 minute), so saves are explicit, quota-checked, and individually removable.
 
@@ -431,6 +431,21 @@ The service worker installs the current hashed JS/CSS shell for cold offline lau
 does not cache cross-origin API or signed S3 requests. Offline access on a fresh launch
 still requires an unexpired cached Cognito session; accepting expired identity tokens or
 adding a separate device PIN is intentionally outside this feature.
+
+### Client experience architecture
+
+The browser shell is composed of per-user providers mounted above page routing, so no
+page owns long-lived state:
+
+| Provider | Responsibility |
+|----------|----------------|
+| `ProfileProvider` | One cached cloud profile for Quick-lecture defaults, onboarding consent, inferred playback speed, and the You page. |
+| `PlayerProvider` | The single `<audio>` element, resume positions, persisted speed, telemetry heartbeats, presigned-URL refresh on expiry, and Media Session controls. Rendered as a mini-player (mobile) or a persistent side panel (≥1024 px). |
+| `DownloadsProvider` | Offline records, byte-level download progress, cancellation, and deferred removal behind an Undo toast. A copy that is playing keeps its Blob URL until the player moves on. |
+| `CreateProvider` | Conversation, guided-design brief, and the in-flight job, persisted under `alc.create.<sub>`; polling resumes after navigation or reload and completion loads the lecture into the player. |
+
+Device-local state (favorites, positions, drafts, downloads) is keyed by Cognito `sub` and
+can be cleared from **You → Clear data on this device** without touching cloud data.
 
 ---
 

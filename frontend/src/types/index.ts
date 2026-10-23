@@ -1,4 +1,4 @@
-export type AppPage = 'conversation' | 'series' | 'history' | 'profile';
+export type AppPage = 'create' | 'series' | 'library' | 'you';
 
 export interface ChatMessage {
   id: string;
@@ -43,6 +43,8 @@ export interface Lecture {
   offlineAvailable?: boolean;
   offlineBytes?: number;
   isFavorite?: boolean;
+  /** Playable audio without a lecture record (no telemetry or detail lookups). */
+  untracked?: boolean;
 }
 
 export interface UserProfile {
@@ -265,14 +267,19 @@ export interface PlaybackUpdate {
   occurredAt: string;
 }
 
+export type ThemePreference = 'system' | 'light' | 'dark';
+
+/** User-facing creation modes: generate now, shape it first, or plan several episodes. */
+export type CreateMode = 'quick' | 'guided' | 'series';
+
 export interface AppState {
   currentPage: AppPage;
-  messages: ChatMessage[];
-  currentLecture: Lecture | null;
-  audioUrl: string | null;
   selectedSeriesId: string | null;
   isOnline: boolean;
   drivingMode: boolean;
+  theme: ThemePreference;
+  /** A page with unsaved edits asks before primary navigation discards them. */
+  hasUnsavedChanges: boolean;
 }
 
 export interface AuthUser {

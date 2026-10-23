@@ -103,12 +103,12 @@ export function startJob(
   });
 }
 
-export function getJobStatus(jobId: string): Promise<Job> {
-  return request<Job>(`/jobs/${encodeURIComponent(jobId)}/status`);
+export function getJobStatus(jobId: string, signal?: AbortSignal): Promise<Job> {
+  return request<Job>(`/jobs/${encodeURIComponent(jobId)}/status`, { signal });
 }
 
-export function getJobResult(jobId: string): Promise<Job> {
-  return request<Job>(`/jobs/${encodeURIComponent(jobId)}/result`);
+export function getJobResult(jobId: string, signal?: AbortSignal): Promise<Job> {
+  return request<Job>(`/jobs/${encodeURIComponent(jobId)}/result`, { signal });
 }
 
 export interface RefreshAudioResponse {
@@ -253,20 +253,22 @@ function cancellableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 export async function pollJobUntilDone(
   jobId: string,
   onUpdate?: (job: Job) => void,
-  intervalMs = 2000
+  intervalMs = 2000,
+  signal?: AbortSignal
 ): Promise<Job> {
   // Guard against runaway polling (20 minutes at the default interval).
   const maxAttempts = 600;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const status = await getJobStatus(jobId);
+    if (signal?.aborted) throw new DOMException('Polling was cancelled', 'AbortError');
+    const status = await getJobStatus(jobId, signal);
     onUpdate?.(status);
     if (status.status === 'completed') {
-      return getJobResult(jobId);
+      return getJobResult(jobId, signal);
     }
     if (status.status === 'failed') {
       throw new ApiError(status.error ?? 'Lecture generation failed', 500, 'job_failed');
     }
-    await sleep(intervalMs);
+    await cancellableSleep(intervalMs, signal);
   }
   throw new ApiError('Timed out waiting for the lecture', 504, 'timeout');
 }

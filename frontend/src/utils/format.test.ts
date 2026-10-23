@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { formatDate, formatDuration, truncate } from './format';
+import {
+  describeProgress,
+  formatDate,
+  formatDuration,
+  formatMinutes,
+  topicHue,
+  topicInitial,
+  truncate,
+} from './format';
 
 describe('formatDuration', () => {
   it('formats sub-minute', () => {
@@ -43,5 +51,31 @@ describe('formatDate', () => {
 
   it('returns empty for invalid', () => {
     expect(formatDate('not-a-date')).toBe('');
+  });
+});
+
+describe('formatMinutes', () => {
+  it('formats minutes and hours for totals', () => {
+    expect(formatMinutes(45)).toBe('45 min');
+    expect(formatMinutes(120)).toBe('2 h');
+    expect(formatMinutes(90)).toBe('1 h 30 min');
+    expect(formatMinutes(0)).toBe('0 min');
+  });
+});
+
+describe('describeProgress', () => {
+  it('describes listening state in words', () => {
+    expect(describeProgress(undefined, 20)).toBe('Not started');
+    expect(describeProgress(40, 20)).toBe('40% complete · 12 min left');
+    expect(describeProgress(97, 20)).toBe('Completed');
+  });
+});
+
+describe('topic art helpers', () => {
+  it('derives a stable hue and initial', () => {
+    expect(topicHue('Black holes')).toBe(topicHue('Black holes'));
+    expect(topicHue('Black holes')).toBeGreaterThanOrEqual(0);
+    expect(topicHue('Black holes')).toBeLessThan(360);
+    expect(topicInitial('  éclair recipes')).toBe('É');
   });
 });

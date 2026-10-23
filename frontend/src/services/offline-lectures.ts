@@ -129,9 +129,57 @@ export async function listOfflineLectures(ownerSub: string): Promise<OfflineLect
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 
-export async function removeOfflineLecture(ownerSub: string, lectureId: string): Promise<void> {
+export async function removeOfflineLecture(
+  ownerSub: string,
+  lectureId: string,
+  options: { keepActiveUrl?: boolean } = {}
+): Promise<void> {
   await runRequest('readwrite', (store) => store.delete(recordKey(ownerSub, lectureId)));
-  revokeOfflineAudioUrl(ownerSub, lectureId);
+  // A lecture that is playing keeps its in-memory Blob URL until the player moves on.
+  if (!options.keepActiveUrl) revokeOfflineAudioUrl(ownerSub, lectureId);
+}
+
+/** Remove every offline copy belonging to one user. */
+export async function clearOfflineLectures(ownerSub: string): Promise<number> {
+  const records = await listOfflineLectures(ownerSub);
+  for (const record of records) await removeOfflineLecture(ownerSub, record.lectureId);
+  return records.length;
+}
+
+export interface DownloadProgress {
+  receivedBytes: number;
+  totalBytes: number | null;
+}
+
+/** Download audio with byte progress and cancellation. */
+export async function downloadAudio(
+  url: string,
+  options: { signal?: AbortSignal; onProgress?: (progress: DownloadProgress) => void } = {}
+): Promise<Blob> {
+  const response = await fetch(url, { signal: options.signal });
+  if (!response.ok) throw new OfflineStorageError('The lecture audio download failed.');
+  const type = response.headers.get('content-type') ?? '';
+  const lengthHeader = Number(response.headers.get('content-length'));
+  const totalBytes = Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : null;
+  if (!response.body?.getReader) {
+    const blob = await response.blob();
+    options.onProgress?.({ receivedBytes: blob.size, totalBytes: blob.size });
+    return blob;
+  }
+  const reader = response.body.getReader();
+  const chunks: BlobPart[] = [];
+  let receivedBytes = 0;
+  options.onProgress?.({ receivedBytes, totalBytes });
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      receivedBytes += value.byteLength;
+      options.onProgress?.({ receivedBytes, totalBytes });
+    }
+  }
+  return new Blob(chunks, { type });
 }
 
 export function getOfflineAudioUrl(record: OfflineLectureRecord): string {

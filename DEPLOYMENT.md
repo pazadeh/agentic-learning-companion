@@ -236,18 +236,22 @@ deactivate && cd ..
       real Nova session progress rather than elapsed-time estimates.
 - [ ] The new lecture key ends in `lecture.wav`; the browser plays it, while older
       `lecture.mp3` history entries still refresh and play.
-- [ ] Playback controls work: play/pause, ±15s, speed 0.5×–2×, seek.
-- [ ] The lecture appears in **History**; reopening it refreshes a fresh audio URL.
-- [ ] Profile edits persist after signing in on a second device.
-- [ ] Listening for at least 20 seconds updates History progress and Profile statistics.
+- [ ] Playback controls work: play/pause, ±15s, speed 0.5×–2×, seek; playback keeps
+      going while switching between Create, My series, Library, and You.
+- [ ] Leaving Create during generation and reloading the page resumes the progress view;
+      a “ready” notification offers **Play** when it finishes.
+- [ ] The lecture appears in **Library**; **Resume** continues near the last position.
+- [ ] You settings persist after signing in on a second device; leaving You with unsaved
+      changes asks first.
+- [ ] Listening for at least 20 seconds updates Library progress and You statistics.
 - [ ] Learned preferences appear only after repeated completed lectures; explicit
       profile settings and instructions in the current request take priority.
 - [ ] Disabling behavioral personalization hides learned preferences; resetting them
       preserves playback/history statistics but excludes earlier evidence.
 - [ ] Visiting an audio URL after ~1 hour fails (presigned URL expired) — refresh works.
 - [ ] Hitting the API without a token returns 401.
-- [ ] Chat → **Series** → "Teach me *Thinking, Fast and Slow* in 4 × 30-minute
-      lectures" → a draft appears under **Series**, then a 4-episode plan to review.
+- [ ] Create → **Plan a series** → "Teach me *Thinking, Fast and Slow* in 4 × 30-minute
+      lectures" → a draft appears under **My series**, then a 4-episode plan to review.
 - [ ] Edit the plan (reorder, change a duration), save, then approve. Episodes
       generate one at a time and each becomes playable as soon as it completes. A
   processing episode becomes retryable only after its active job has stopped publishing

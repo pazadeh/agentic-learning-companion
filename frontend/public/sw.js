@@ -3,7 +3,7 @@
  * User audio/transcripts are managed explicitly in owner-scoped IndexedDB, never
  * opportunistically under expiring presigned URLs.
  */
-const SHELL_CACHE = 'alc-shell-v4';
+const SHELL_CACHE = 'alc-shell-v5';
 const SHELL_ASSETS = ['/', '/index.html', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {

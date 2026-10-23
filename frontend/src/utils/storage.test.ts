@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getItem, removeItem, setItem } from './storage';
+import { getItem, removeItem, removeUserItems, setItem, userKey } from './storage';
 
 describe('storage', () => {
   it('round-trips a value', () => {
@@ -25,5 +25,17 @@ describe('storage', () => {
   it('handles arrays', () => {
     setItem('list', [1, 2, 3]);
     expect(getItem<number[]>('list', [])).toEqual([1, 2, 3]);
+  });
+});
+
+describe('user-scoped storage', () => {
+  it('isolates keys per user and clears only that user', () => {
+    setItem(userKey('user-a', 'favorites'), ['1']);
+    setItem(userKey('user-b', 'favorites'), ['2']);
+    setItem('alc.drivingMode', true);
+    removeUserItems('user-a');
+    expect(getItem(userKey('user-a', 'favorites'), null)).toBeNull();
+    expect(getItem(userKey('user-b', 'favorites'), null)).toEqual(['2']);
+    expect(getItem('alc.drivingMode', false)).toBe(true);
   });
 });

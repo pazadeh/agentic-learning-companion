@@ -1,3 +1,5 @@
+import { Icon } from '../common/Icon';
+
 interface SeriesSuggestionCardProps {
   topic: string;
   /** Explanation shown under the heading. */
@@ -20,6 +22,7 @@ export function SeriesSuggestionCard({
 }: SeriesSuggestionCardProps) {
   return (
     <aside className="series-suggestion" aria-label="Lecture series suggestion">
+      <Icon name="layers" className="series-suggestion__icon" />
       <div>
         <strong>Want to go deeper?</strong>
         <p>{message ?? `Turn “${topic}” into an editable, multi-part lecture plan.`}</p>
